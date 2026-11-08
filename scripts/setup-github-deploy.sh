@@ -30,10 +30,13 @@ gcloud iam service-accounts describe "$SA" --project "$PROJECT_ID" >/dev/null 2>
   gcloud iam service-accounts create "$SA_NAME" --display-name="GitHub Actions deployer" --project "$PROJECT_ID"
 
 # What it may do: manage Cloud Run revisions, push images, and run them as the service's own account
+# A new service account takes a few seconds to become visible to IAM, so retry for a short while
+retry() { for i in 1 2 3 4 5 6; do "$@" && return 0; sleep 5; done; "$@"; }
+
 for ROLE in roles/run.admin roles/artifactregistry.writer; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="$ROLE" --condition=None >/dev/null
+  retry gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" --role="$ROLE" --condition=None >/dev/null
 done
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+retry gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
   --member="serviceAccount:$SA" --role=roles/iam.serviceAccountUser --project "$PROJECT_ID" >/dev/null
 
 # Trust GitHub's tokens, but only for this repository and branch
