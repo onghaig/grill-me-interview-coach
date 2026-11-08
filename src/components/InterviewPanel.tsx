@@ -177,7 +177,7 @@ export function InterviewPanel({
             {/* Clickable Question Title that opens selector */}
             <button
               onClick={() => setShowQuestionSelector(!showQuestionSelector)}
-              className="w-full text-left font-bold text-slate-100 text-sm hover:text-indigo-300 transition flex items-center justify-between group"
+              className="w-full text-left font-display font-medium text-slate-50 text-[15px] leading-snug hover:text-indigo-300 transition flex items-center justify-between group"
             >
               <span className="truncate">{currentQuestion.title}</span>
               <ChevronDown
@@ -190,7 +190,7 @@ export function InterviewPanel({
 
           <button
             onClick={() => setShowQuestionDetails(!showQuestionDetails)}
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition"
+            className="p-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition"
             title="Toggle Question Brief & Scale"
           >
             <Info className="w-4 h-4" />
@@ -199,7 +199,7 @@ export function InterviewPanel({
 
         {/* Expandable Question Selector Dropdown */}
         {showQuestionSelector && (
-          <div className="mt-3 p-2 bg-slate-900 border border-slate-800 rounded-xl shadow-xl shadow-black/40 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="mt-3 p-2 bg-slate-900 border border-slate-800 rounded-lg shadow-xl shadow-black/40 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
             <span className="text-[10px] font-mono text-slate-500 uppercase px-2 py-1 block">
               Select Question
             </span>
@@ -210,7 +210,7 @@ export function InterviewPanel({
                   onSelectQuestion(q);
                   setShowQuestionSelector(false);
                 }}
-                className={`w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium transition flex items-center justify-between ${
+                className={`w-full text-left px-2.5 py-2 rounded-md text-xs font-medium transition flex items-center justify-between ${
                   q.id === currentQuestion.id
                     ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40'
                     : 'hover:bg-slate-800 text-slate-300'
@@ -228,7 +228,7 @@ export function InterviewPanel({
 
         {/* Expandable Question Details Accordion */}
         {showQuestionDetails && (
-          <div className="mt-3 p-3 bg-slate-900/90 border border-slate-800 rounded-xl text-xs space-y-2 text-slate-300 animate-in fade-in duration-150">
+          <div className="mt-3 p-3 bg-slate-900/90 border border-slate-800 rounded-lg text-xs space-y-2 text-slate-300 animate-in fade-in duration-150">
             <div>
               <span className="text-[10px] uppercase font-bold text-indigo-400 tracking-wider block mb-0.5">
                 Scale & Traffic Constraints:
@@ -345,12 +345,12 @@ export function InterviewPanel({
                 value={candidateInput}
                 onChange={(e) => setCandidateInput(e.target.value)}
                 placeholder="Speak into mic, hold Space, or type answer..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-md px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
               />
               <button
                 type="submit"
                 disabled={!candidateInput.trim()}
-                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-md text-xs font-semibold flex items-center gap-1 transition"
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>Send</span>
@@ -367,7 +367,7 @@ export function InterviewPanel({
             <button
               onClick={onStartInterview}
               disabled={isConnecting}
-              className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
+              className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition"
             >
               <Play className="w-4 h-4 fill-white" />
               <span>{isConnecting ? 'Starting Session...' : 'Start Interview'}</span>
@@ -375,7 +375,7 @@ export function InterviewPanel({
           ) : (
             <button
               onClick={onEndInterview}
-              className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
+              className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition"
             >
               <Square className="w-4 h-4 fill-white" />
               <span>End Interview & Grade</span>
@@ -386,7 +386,7 @@ export function InterviewPanel({
           <button
             onClick={() => onTogglePushToTalk(!isPushToTalk)}
             disabled={isInterviewActive || isConnecting}
-            className={`disabled:opacity-60 disabled:cursor-not-allowed py-2 px-3 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition ${
+            className={`disabled:opacity-60 disabled:cursor-not-allowed py-2 px-3 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition ${
               isPushToTalk
                 ? 'border-indigo-500/50 bg-indigo-950/40 text-indigo-300'
                 : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
@@ -406,7 +406,7 @@ export function InterviewPanel({
 
         {/* Mic Status & Visualizer Banner */}
         <div
-          className={`p-2 rounded-xl border flex items-center justify-between text-xs transition-colors ${micStatusColor}`}
+          className={`p-2 rounded-lg border flex items-center justify-between text-xs transition-colors ${micStatusColor}`}
         >
           <div className="flex items-center gap-2">
             {isPushToTalk && !isSpacePressed ? (
@@ -455,7 +455,7 @@ export function InterviewPanel({
             onPointerUp={onPttRelease}
             onPointerCancel={onPttRelease}
             onContextMenu={(e) => e.preventDefault()}
-            className={`w-full py-2.5 px-3 rounded-lg text-center font-mono text-[11px] transition-all border touch-none ${
+            className={`w-full py-2.5 px-3 rounded-md text-center font-mono text-[11px] transition-all border touch-none ${
               isSpacePressed
                 ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
                 : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
@@ -599,7 +599,7 @@ export function InterviewPanel({
                     </div>
 
                     <div
-                      className={`p-3 rounded-xl max-w-[92%] leading-relaxed ${
+                      className={`p-3 rounded-lg max-w-[92%] leading-relaxed ${
                         isUser
                           ? 'bg-indigo-600/25 border border-indigo-500/40 text-indigo-50 rounded-tr-none'
                           : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none shadow-sm'
@@ -624,7 +624,7 @@ export function InterviewPanel({
                     </span>
                   </div>
                   <div
-                    className={`p-3 rounded-xl max-w-[92%] leading-relaxed italic ${
+                    className={`p-3 rounded-lg max-w-[92%] leading-relaxed italic ${
                       interimTranscript.role === 'user'
                         ? 'bg-indigo-600/15 border border-indigo-500/30 text-indigo-200 rounded-tr-none'
                         : 'bg-slate-900/80 border border-slate-800 text-slate-300 rounded-tl-none'

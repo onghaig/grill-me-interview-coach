@@ -15,7 +15,7 @@ export function ProblemStatement({ question }: { question: SystemDesignQuestion 
             {question.difficulty}
           </span>
         </div>
-        <h1 className="text-2xl font-semibold text-slate-100">{question.title}</h1>
+        <h1 className="font-display text-3xl font-medium tracking-tight text-slate-50 text-balance">{question.title}</h1>
 
         <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mt-6 mb-1.5">
           Problem

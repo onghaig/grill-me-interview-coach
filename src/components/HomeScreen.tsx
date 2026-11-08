@@ -67,7 +67,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 <select
                   value={voice}
                   onChange={(e) => setVoice(e.target.value)}
-                  className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200"
+                  className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
                 >
                   {VOICES.map((v) => (
                     <option key={v.id} value={v.id}>
@@ -78,7 +78,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
               </label>
               <button
                 onClick={() => setPushToTalk(!pushToTalk)}
-                className={`py-1.5 px-3 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition ${
+                className={`py-1.5 px-3 rounded-md border text-xs font-semibold flex items-center gap-1.5 transition ${
                   pushToTalk
                     ? 'border-indigo-500/50 bg-indigo-950/40 text-indigo-300'
                     : 'border-slate-700 bg-slate-900 text-slate-400'
@@ -98,16 +98,40 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
             <span className="w-2 h-2 rounded-full bg-indigo-500" />
             Software Engineering Technical Interview Coach
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight mt-6">Practice the interview before the interview</h1>
+          <h1 className="font-display text-[2.6rem] leading-[1.1] font-medium tracking-tight mt-8 text-slate-50 text-balance">Practice the interview before the interview</h1>
           <p className="text-slate-400 mt-3 text-[15px] leading-relaxed max-w-2xl">
             Type any system design, low-level design or LeetCode-style question. The AI works out which it is,
             builds a grading rubric, interviews you on it out loud, then scores you against that rubric.
           </p>
         </div>
 
+        <ol className="flex items-center gap-2 mb-6 text-xs text-slate-500">
+          {['Describe the question', 'Review the rubric', 'Interview'].map((label, i) => {
+            const active = (!generated && i === 0) || (generated && i === 1);
+            const done = generated && i === 0;
+            return (
+              <li key={label} className="flex items-center gap-2">
+                {i > 0 && <span className="w-6 h-px bg-slate-700" />}
+                <span
+                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono border ${
+                    active
+                      ? 'border-indigo-400 text-indigo-300'
+                      : done
+                      ? 'border-slate-600 bg-slate-800 text-slate-300'
+                      : 'border-slate-700 text-slate-600'
+                  }`}
+                >
+                  {done ? '\u2713' : i + 1}
+                </span>
+                <span className={active ? 'text-slate-200' : ''}>{label}</span>
+              </li>
+            );
+          })}
+        </ol>
+
         {!generated ? (
           <>
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -136,7 +160,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 <button
                   onClick={handleGenerate}
                   disabled={!prompt.trim() || isGenerating}
-                  className="py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white text-sm font-semibold flex items-center gap-2 transition"
+                  className="py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white text-sm font-semibold flex items-center gap-2 transition"
                 >
                   {isGenerating ? (
                     <>
@@ -150,7 +174,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 </button>
               </div>
               {error && (
-                <p className="mt-3 text-xs text-rose-400 border border-rose-500/30 bg-rose-950/20 rounded-lg p-2.5">
+                <p className="mt-3 text-xs text-rose-400 border border-rose-500/30 bg-rose-950/20 rounded-md p-2.5">
                   {error}
                 </p>
               )}
@@ -165,7 +189,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 <button
                   key={q.id}
                   onClick={() => onStart(q, options)}
-                  className="text-left p-3.5 rounded-xl border border-slate-800 bg-slate-900/50 hover:border-indigo-500/50 hover:bg-slate-900 transition group"
+                  className="flex flex-col justify-start text-left p-4 rounded-lg border border-slate-800 bg-slate-900/50 hover:border-indigo-500/50 hover:bg-slate-900 transition group"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-sm">{q.title}</span>
@@ -185,7 +209,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
               <ArrowLeft className="w-3.5 h-3.5" /> Change question
             </button>
 
-            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-5">
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-indigo-500/40 text-indigo-300 bg-indigo-950/30">
                   {QUESTION_TYPE_LABELS[generated.type || 'system_design']}
@@ -195,12 +219,12 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 </span>
                 <span className="text-[11px] text-slate-500">{generated.scale}</span>
               </div>
-              <h2 className="text-lg font-semibold">{generated.title}</h2>
+              <h2 className="font-display text-2xl font-medium tracking-tight text-slate-50">{generated.title}</h2>
               <p className="text-sm text-slate-300 mt-1">{generated.description}</p>
             </div>
 
             {generated.rubric && (
-              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
                 <h3 className="text-xs font-mono uppercase tracking-wider text-indigo-400 mb-3 flex items-center gap-1.5">
                   <ListChecks className="w-3.5 h-3.5" /> Grading rubric
                 </h3>
@@ -241,7 +265,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
               </div>
             )}
 
-            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-wrap items-center gap-3">
+            <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4 flex flex-wrap items-center gap-3">
               {optionsBar}
               <div className="flex-1" />
               <button
@@ -253,7 +277,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
               </button>
               <button
                 onClick={() => onStart(generated, options)}
-                className="py-2.5 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold flex items-center gap-2 transition"
+                className="py-2.5 px-5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold flex items-center gap-2 transition"
               >
                 <Play className="w-4 h-4 fill-white" /> Start interview
               </button>

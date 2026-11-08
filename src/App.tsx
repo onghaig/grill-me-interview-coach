@@ -488,15 +488,15 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans">
       {/* Left 65%: Whiteboard / Code workspace */}
       <div className="w-[65%] h-full flex flex-col">
-        <div className="flex items-center gap-1 px-2 pt-2 bg-slate-900/60 border-b border-slate-800">
+        <div className="flex items-center gap-2 px-3 bg-slate-900 border-b border-slate-800">
           {(['problem', 'whiteboard', 'code'] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setWorkspaceTab(tab)}
-              className={`px-4 py-1.5 text-xs font-semibold rounded-t-lg transition ${
+              className={`px-4 py-2 text-xs font-medium -mb-px border-b-2 transition ${
                 workspaceTab === tab
-                  ? 'bg-slate-950 text-indigo-300 border border-b-0 border-slate-800'
-                  : 'text-slate-500 hover:text-slate-300'
+                  ? 'border-indigo-400 text-slate-50'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
               }`}
             >
               {tab === 'problem' ? 'Problem' : tab === 'whiteboard' ? 'Whiteboard' : 'Code'}

@@ -1,18 +1,45 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+
+  /* Neutrals: graphite with a slight teal bias */
+  --color-slate-50: #f1f4f4;
+  --color-slate-100: #e6ebec;
+  --color-slate-200: #cfd8da;
+  --color-slate-300: #aebbbf;
+  --color-slate-400: #8e9ca1;
+  --color-slate-500: #75848b;
+  --color-slate-600: #4a575c;
+  --color-slate-700: #333e43;
+  --color-slate-800: #232c30;
+  --color-slate-900: #181f22;
+  --color-slate-950: #0f1416;
+
+  /* Accent: highlighter ochre (replaces indigo everywhere) */
+  --color-indigo-50: #fbf6e9;
+  --color-indigo-100: #f5e9c8;
+  --color-indigo-200: #ecd599;
+  --color-indigo-300: #e3c070;
+  --color-indigo-400: #d9ab4c;
+  --color-indigo-500: #c4912f;
+  --color-indigo-600: #9a6a1a;
+  --color-indigo-700: #7e5416;
+  --color-indigo-800: #5d3d12;
+  --color-indigo-900: #3f2a10;
+  --color-indigo-950: #261a0a;
 }
 
-html { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
+html { -webkit-font-smoothing: antialiased; }
 
 /* Quiet, consistent focus and scrollbars */
-:focus-visible { outline: 2px solid rgb(99 102 241 / 0.7); outline-offset: 2px; }
+:focus-visible { outline: 2px solid rgb(217 171 76 / 0.75); outline-offset: 2px; }
 textarea:focus-visible, select:focus-visible { outline-offset: 0; }
-* { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+* { scrollbar-width: thin; scrollbar-color: #333e43 transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
+*::-webkit-scrollbar-thumb { background: #333e43; border-radius: 8px; }
 *::-webkit-scrollbar-track { background: transparent; }
 button { transition-property: color, background-color, border-color, opacity; transition-duration: 150ms; }
 
@@ -21,21 +48,21 @@ button { transition-property: color, background-color, border-color, opacity; tr
 .hljs-code .hljs-keyword,
 .hljs-code .hljs-selector-tag,
 .hljs-code .hljs-literal,
-.hljs-code .hljs-type { color: #c4b5fd; }
+.hljs-code .hljs-type { color: #d9ab4c; }
 .hljs-code .hljs-built_in,
 .hljs-code .hljs-title.function_,
-.hljs-code .hljs-title.class_ { color: #7dd3fc; }
-.hljs-code .hljs-title { color: #7dd3fc; }
+.hljs-code .hljs-title.class_ { color: #7fc4c0; }
+.hljs-code .hljs-title { color: #7fc4c0; }
 .hljs-code .hljs-string,
 .hljs-code .hljs-regexp,
-.hljs-code .hljs-subst { color: #86efac; }
-.hljs-code .hljs-number { color: #fdba74; }
+.hljs-code .hljs-subst { color: #a3c98a; }
+.hljs-code .hljs-number { color: #e0916a; }
 .hljs-code .hljs-comment,
 .hljs-code .hljs-quote { color: #64748b; font-style: italic; }
 .hljs-code .hljs-params,
 .hljs-code .hljs-variable,
 .hljs-code .hljs-attr { color: #e2e8f0; }
 .hljs-code .hljs-meta,
-.hljs-code .hljs-doctag { color: #f9a8d4; }
+.hljs-code .hljs-doctag { color: #c9a0c4; }
 .hljs-code .hljs-operator,
 .hljs-code .hljs-punctuation { color: #cbd5e1; }

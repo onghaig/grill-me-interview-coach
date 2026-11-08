@@ -71,11 +71,11 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-xl shadow-black/40 overflow-hidden">
+      <div className="bg-slate-900 border border-slate-800 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col shadow-xl shadow-black/40 overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+            <div className="p-2 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
               <Award className="w-6 h-6" />
             </div>
             <div>
@@ -90,7 +90,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
             {scorecard && (
               <button
                 onClick={handleCopyReport}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 transition"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md border border-slate-700 transition"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>{copied ? 'Copied Report!' : 'Export Report'}</span>
@@ -98,7 +98,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
             )}
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition"
+              className="p-1.5 text-slate-400 hover:text-slate-200 rounded-md hover:bg-slate-800 transition"
               aria-label="Close modal"
             >
               <X className="w-5 h-5" />
@@ -134,21 +134,21 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
             <>
               {/* Top Decision Banner */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                <div className="p-4 rounded-lg bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
                   <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">Hiring Committee Decision</span>
                   <div className="mt-2 flex items-center gap-3">
                     <span
-                      className={`px-3 py-1 text-sm font-bold rounded-lg border ${getVerdictBadge(
+                      className={`px-3 py-1 text-sm font-bold rounded-md border ${getVerdictBadge(
                         scorecard.overallVerdict
                       )}`}
                     >
                       {scorecard.overallVerdict}
                     </span>
-                    <span className="text-2xl font-black text-slate-100">{scorecard.totalScore}<span className="text-sm font-normal text-slate-500">/100</span></span>
+                    <span className="font-display text-4xl font-medium text-slate-50">{scorecard.totalScore}<span className="text-sm font-normal text-slate-500">/100</span></span>
                   </div>
                 </div>
 
-                <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                <div className="p-4 rounded-lg bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
                   <span className="text-xs font-medium text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                     <Clock className="w-3.5 h-3.5 text-slate-400" />
                     Interview Duration
@@ -161,7 +161,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
                   </div>
                 </div>
 
-                <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+                <div className="p-4 rounded-lg bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
                   <span className="text-xs font-medium text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-slate-400" />
                     Whiteboard Assessment
@@ -176,7 +176,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
               </div>
 
               {/* Summary Statement */}
-              <div className="p-4 rounded-xl bg-indigo-950/20 border border-indigo-900/40 text-slate-200 text-sm leading-relaxed">
+              <div className="p-4 rounded-lg bg-indigo-950/20 border border-indigo-900/40 text-slate-200 text-sm leading-relaxed">
                 <span className="font-semibold text-indigo-300 block mb-1">Executive Summary:</span>
                 {scorecard.summary}
               </div>
@@ -191,7 +191,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
                   {scorecard.categoryScores.map((cat, i) => (
                     <div
                       key={i}
-                      className="p-3.5 rounded-xl bg-slate-950/50 border border-slate-800/80 hover:border-slate-700 transition flex flex-col justify-between"
+                      className="p-3.5 rounded-lg bg-slate-950/50 border border-slate-800/80 hover:border-slate-700 transition flex flex-col justify-between"
                     >
                       <div className="flex items-center justify-between mb-1.5">
                         <span className="text-xs font-semibold text-slate-200">{cat.name}</span>
@@ -220,7 +220,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
               {/* Strengths & Improvements */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Strengths */}
-                <div className="p-4 rounded-xl bg-slate-950/50 border border-emerald-950/40">
+                <div className="p-4 rounded-lg bg-slate-950/50 border border-emerald-950/40">
                   <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5 mb-2.5">
                     <CheckCircle2 className="w-4 h-4" />
                     Key Strengths Demonstrated
@@ -236,7 +236,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
                 </div>
 
                 {/* Improvements */}
-                <div className="p-4 rounded-xl bg-slate-950/50 border border-amber-950/40">
+                <div className="p-4 rounded-lg bg-slate-950/50 border border-amber-950/40">
                   <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5 mb-2.5">
                     <AlertTriangle className="w-4 h-4" />
                     Areas for Improvement & Red Flags
@@ -254,7 +254,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
 
               {/* Architectural Trade-offs & Study Topics */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 rounded-xl bg-slate-950/50 border border-slate-800">
+                <div className="p-4 rounded-lg bg-slate-950/50 border border-slate-800">
                   <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
                     Architectural Trade-offs Analyzed
                   </h4>
@@ -268,7 +268,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
                   </ul>
                 </div>
 
-                <div className="p-4 rounded-xl bg-slate-950/50 border border-slate-800">
+                <div className="p-4 rounded-lg bg-slate-950/50 border border-slate-800">
                   <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5 mb-2">
                     <BookOpen className="w-3.5 h-3.5 text-indigo-400" />
                     Recommended Study Topics
@@ -294,7 +294,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
           </p>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition"
+            className="px-4 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-md transition"
           >
             Done
           </button>
