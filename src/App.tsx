@@ -13,6 +13,7 @@ import { api, getApiKey, isConfigured, llmForSocket } from './utils/api';
 import { AuthScreen, AccountUser } from './components/AuthScreen';
 import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
+import { MicGate } from './utils/micGate';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
 
@@ -74,6 +75,7 @@ export default function App() {
   // Transcript entry currently being streamed into, so chunks merge into one message per turn
   const openEntryRef = useRef<{ role: 'user' | 'interviewer'; id: string } | null>(null);
   const openTextRef = useRef('');
+  const lastMicVolumeRef = useRef(0);
   const sessionModeRef = useRef<string>('live_socket');
 
   const showNotice = (msg: string) => setNotice(msg);
@@ -361,6 +363,8 @@ export default function App() {
               audioPlayerRef.current.playChunk(msg.data);
             }
           } else if (msg.type === 'interrupted') {
+            // The model heard speech and stopped. The mic level helps tell a real interruption from echo or noise.
+            console.info(`[bar-raiser] interviewer interrupted (mic level ${lastMicVolumeRef.current})`);
             // User interrupted model speech
             if (audioPlayerRef.current) {
               audioPlayerRef.current.stop();
@@ -412,19 +416,12 @@ export default function App() {
 
       // Start Microphone Recording (non-blocking)
       //
-      // The live model bills for every second of audio it receives and re-reads it on later turns, so silence is
-      // not sent in hands-free mode. Audio goes out while someone is speaking, preceded by a short pre-roll (so the
-      // start of a sentence is never clipped) and followed by a tail long enough for the server to hear the pause
-      // and end the turn. Push-to-talk already sends only what you hold the key for.
-      const GATE_THRESHOLD = 4; // on the 0-100 level meter; quiet speech is well above this, a still room well below
-      const PREROLL_MS = 450;
-      const HANGOVER_MS = 2000;
-      let lastLoudAt = 0;
-      let streaming = false;
+      // In hands-free mode the MicGate sends audio only while someone is speaking (silence costs tokens), and
+      // ignores the interviewer's own voice coming back through the speakers, which the model would otherwise
+      // take as the candidate interrupting. Push-to-talk already sends only what you hold the key for.
+      const gate = new MicGate<string>();
       let latestVolume = 0;
-      const preroll: { at: number; data: string }[] = [];
-      const sendAudio = (data: string) =>
-        wsRef.current?.send(JSON.stringify({ type: 'audio', data }));
+      const sendAudio = (data: string) => wsRef.current?.send(JSON.stringify({ type: 'audio', data }));
 
       const recorder = new AudioRecorder(
         (base64Pcm) => {
@@ -434,26 +431,13 @@ export default function App() {
             if (pttSendingRef.current) sendAudio(base64Pcm);
             return;
           }
-          const now = performance.now();
-          if (latestVolume >= GATE_THRESHOLD) lastLoudAt = now;
-          if (now - lastLoudAt < HANGOVER_MS) {
-            if (!streaming) {
-              streaming = true;
-              for (const c of preroll) sendAudio(c.data);
-              preroll.length = 0;
-            }
-            sendAudio(base64Pcm);
-          } else {
-            if (streaming) {
-              streaming = false;
-              ws.send(JSON.stringify({ type: 'audio_end' })); // tell the model the mic went quiet
-            }
-            preroll.push({ at: now, data: base64Pcm });
-            while (preroll.length && now - preroll[0].at > PREROLL_MS) preroll.shift();
-          }
+          const { send, ended } = gate.push(base64Pcm, latestVolume, performance.now(), !!audioPlayerRef.current?.isPlaying);
+          for (const chunk of send) sendAudio(chunk);
+          if (ended) ws.send(JSON.stringify({ type: 'audio_end' })); // tell the model the mic went quiet
         },
         (volume) => {
           latestVolume = volume;
+          lastMicVolumeRef.current = volume;
           setMicVolume(volume);
         }
       );

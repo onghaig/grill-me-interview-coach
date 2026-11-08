@@ -883,6 +883,10 @@ Interviewer Spoken Response:`;
                       }
                     : {
                         automaticActivityDetection: {
+                          // Less eager to decide that background noise or echo is the candidate talking, which is
+                          // what makes the interviewer stop mid-sentence. The padding keeps the first syllable.
+                          startOfSpeechSensitivity: "START_SENSITIVITY_LOW" as any,
+                          prefixPaddingMs: 200,
                           endOfSpeechSensitivity: "END_SENSITIVITY_LOW" as any,
                           silenceDurationMs: 1400,
                         },
