@@ -10,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# github.workflow is the calling workflow's name when this is reused, so a push to main no longer
+# makes the standalone CI run and the one inside Deploy cancel each other
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # The integration test starts a temporary MongoDB; keep the binary between runs
