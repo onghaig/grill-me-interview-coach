@@ -11,39 +11,98 @@ import {
   SystemDesignQuestion,
 } from "./prompts/interviewer.ts";
 
+import crypto from "crypto";
+import { connectDb, closeDb, pingDb, acquireLease, renewLease, releaseLease } from "./server/db.ts";
+import {
+  attachUser,
+  requireAuth,
+  sameOriginOnly,
+  registerAuthRoutes,
+  userFromCookieHeader,
+  originAllowed,
+  AuthUser,
+} from "./server/auth.ts";
+import { registerInterviewRoutes } from "./server/interviews.ts";
+import { rateLimit } from "./server/limits.ts";
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(express.json({ limit: "15mb" }));
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
+// 5 MB covers a 3 MB PDF (base64) plus the rest of the request
+app.use(express.json({ limit: "5mb" }));
 
-// Small in-memory rate limit for the endpoints that spend Gemini quota
-const hits = new Map<string, number[]>();
-function rateLimit(maxPerMinute: number): express.RequestHandler {
-  return (req, res, next) => {
-    const now = Date.now();
-    const key = req.ip || "unknown";
-    const recent = (hits.get(key) || []).filter((t) => now - t < 60_000);
-    if (recent.length >= maxPerMinute) {
-      return res.status(429).json({ error: "Too many requests. Wait a minute and try again." });
-    }
-    recent.push(now);
-    hits.set(key, recent);
-    next();
-  };
+app.get("/healthz", async (_req, res) => {
+  const db = await pingDb();
+  res.status(db ? 200 : 503).json({ ok: db, db });
+});
+
+app.use(sameOriginOnly);
+app.use(attachUser());
+registerAuthRoutes(app);
+registerInterviewRoutes(app);
+
+/** Limits on what a user can send us. The same numbers are enforced in the browser. */
+const LIMITS = {
+  resumeChars: 15_000,
+  pdfBytes: 3 * 1024 * 1024,
+  principlesChars: 6_000,
+  roleChars: 500,
+  promptChars: 4_000,
+};
+
+// Each user brings their own Gemini key. It is used for the request and never stored or logged.
+function validKey(k: unknown): k is string {
+  return typeof k === "string" && k.length >= 20 && k.length <= 200 && !/\s/.test(k);
 }
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of hits) if (v.every((t) => now - t > 60_000)) hits.delete(k);
-}, 5 * 60_000).unref();
-app.use(["/api/rubric", "/api/grade", "/api/behavioral"], rateLimit(20));
+function makeAi(key: string) {
+  return new GoogleGenAI({
+    apiKey: key,
+    httpOptions: { apiVersion: "v1beta", headers: { "User-Agent": "bar-raiser" } },
+  });
+}
+function geminiKey(req: express.Request, res: express.Response): string | null {
+  const k = req.headers["x-gemini-key"];
+  const key = Array.isArray(k) ? k[0] : k;
+  if (!validKey(key)) {
+    res.status(400).json({ error: "Add your Gemini API key first (Account menu, Gemini key).", code: "no_key" });
+    return null;
+  }
+  return key;
+}
+const perUser = rateLimit({ max: 20, key: (r) => `gen:${r.user?.id || r.ip}` });
+
+app.post("/api/key/check", requireAuth, perUser, async (req, res) => {
+  const key = req.body?.apiKey;
+  if (!validKey(key)) return res.status(400).json({ error: "That does not look like a Gemini API key." });
+  try {
+    await makeAi(key).models.generateContent({ model: "gemini-2.5-flash", contents: "Reply with ok." });
+    res.json({ ok: true });
+  } catch (err: any) {
+    const status = Number(err?.status) || 0;
+    const msg =
+      status === 400 || status === 401 || status === 403
+        ? "Google rejected that key. Check that you copied it correctly and that the Gemini API is enabled for it."
+        : status === 429
+        ? "That key is out of quota right now. It looks valid, so you can still save it."
+        : "Could not reach Gemini to check the key. Try again.";
+    res.status(status === 429 ? 200 : 400).json(status === 429 ? { ok: true, warning: msg } : { error: msg });
+  }
+});
 
 // Text models tried in order; falls through on overload/unavailable errors.
 const TEXT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-2.5-flash"];
-async function generateWithFallback(params: { contents: any; config?: any }) {
+async function generateWithFallback(ai: GoogleGenAI, params: { contents: any; config?: any }) {
   let lastErr: unknown;
   for (const model of TEXT_MODELS) {
     try {
@@ -55,18 +114,6 @@ async function generateWithFallback(params: { contents: any; config?: any }) {
   }
   throw lastErr;
 }
-
-// Initialize Google GenAI
-const apiKey = process.env.GEMINI_API_KEY || "";
-const ai = new GoogleGenAI({
-  apiKey,
-  httpOptions: {
-    apiVersion: "v1beta",
-    headers: {
-      "User-Agent": "aistudio-build",
-    },
-  },
-});
 
 // API: list questions
 app.get("/api/questions", (_req, res) => {
@@ -155,17 +202,20 @@ function normalizeRubricQuestion(raw: any, userPrompt: string) {
   };
 }
 
-app.post("/api/rubric", async (req, res) => {
+app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
   try {
     const userPrompt = String(req.body?.prompt || "").trim();
     if (!userPrompt) return res.status(400).json({ error: "Enter a question or topic first." });
-    if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY is not set on the server." });
+    if (userPrompt.length > LIMITS.promptChars) return res.status(413).json({ error: `Keep the question under ${LIMITS.promptChars} characters.` });
+    const key = geminiKey(req, res);
+    if (!key) return;
+    const ai = makeAi(key);
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await generateWithFallback({
-          contents: RUBRIC_PROMPT(userPrompt.slice(0, 4000)),
+        const response = await generateWithFallback(ai, {
+          contents: RUBRIC_PROMPT(userPrompt),
           config: { responseMimeType: "application/json" },
         });
         const question = normalizeRubricQuestion(JSON.parse(response.text || "{}"), userPrompt);
@@ -211,17 +261,36 @@ Output ONLY valid JSON:
 }
 Rules: 7 or 8 plannedQuestions, ordered, the first an easy warm-up about their background or current role. Cover every principle supplied (merge if there are more than eight); use their exact names for the competency field only. Never name a principle inside the question text itself, because a real interviewer asks about the situation, not the label. Anchor at least half of the questions on specific resume items and never invent resume facts. 5 to 7 rubric categories with integer weights summing to exactly 100: one per major principle or competency (group if many), plus "Structure and specificity of examples" (clear situation, personal actions, measurable result) and "Self-awareness and learning". Make every signal concrete for this candidate and these principles.`;
 
-app.post("/api/behavioral", async (req, res) => {
+app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
   try {
-    const resumeText = String(req.body?.resumeText || "").trim().slice(0, 20000);
-    const principles = String(req.body?.principles || "").trim().slice(0, 8000);
-    const role = String(req.body?.role || "").trim().slice(0, 1000);
+    const resumeText = String(req.body?.resumeText || "").trim();
+    const principles = String(req.body?.principles || "").trim();
+    const role = String(req.body?.role || "").trim();
     const pdf = req.body?.resumePdf as { data?: string; mimeType?: string } | undefined;
-    const hasPdf = !!(pdf?.data && pdf.mimeType === "application/pdf" && pdf.data.length < 14_000_000);
+
+    if (resumeText.length > LIMITS.resumeChars)
+      return res.status(413).json({ error: `Your resume text is over the ${LIMITS.resumeChars.toLocaleString()} character limit. Trim it to the most recent roles.` });
+    if (principles.length > LIMITS.principlesChars)
+      return res.status(413).json({ error: `The principles text is over ${LIMITS.principlesChars.toLocaleString()} characters.` });
+    if (role.length > LIMITS.roleChars) return res.status(413).json({ error: `Keep the role under ${LIMITS.roleChars} characters.` });
+
+    let hasPdf = false;
+    if (pdf?.data) {
+      if (pdf.mimeType !== "application/pdf" || !/^[A-Za-z0-9+/=]+$/.test(pdf.data)) {
+        return res.status(400).json({ error: "The resume must be a PDF or plain text." });
+      }
+      const bytes = Buffer.from(pdf.data, "base64");
+      if (bytes.length > LIMITS.pdfBytes)
+        return res.status(413).json({ error: `That PDF is over the ${LIMITS.pdfBytes / 1024 / 1024} MB limit. Paste the text of your resume instead.` });
+      if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") return res.status(400).json({ error: "That file is not a valid PDF." });
+      hasPdf = true;
+    }
     if (!resumeText && !hasPdf && !principles && !role) {
       return res.status(400).json({ error: "Add a resume, or the principles or role you want to be interviewed on." });
     }
-    if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY is not set on the server." });
+    const key = geminiKey(req, res);
+    if (!key) return;
+    const ai = makeAi(key);
 
     const prompt = BEHAVIORAL_PROMPT({ resumeText, hasPdf, principles, role });
     const contents = hasPdf
@@ -231,7 +300,7 @@ app.post("/api/behavioral", async (req, res) => {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await generateWithFallback({ contents, config: { responseMimeType: "application/json" } });
+        const response = await generateWithFallback(ai, { contents, config: { responseMimeType: "application/json" } });
         const raw = JSON.parse(response.text || "{}");
         const question: any = normalizeRubricQuestion({ ...raw, type: "behavioral" }, role || principles || "Behavioral interview");
         const planned = (Array.isArray(raw.plannedQuestions) ? raw.plannedQuestions : [])
@@ -260,8 +329,11 @@ app.post("/api/behavioral", async (req, res) => {
   }
 });
 
-app.post("/api/grade", async (req, res) => {
+app.post("/api/grade", requireAuth, perUser, async (req, res) => {
   try {
+    const key = geminiKey(req, res);
+    if (!key) return;
+    const ai = makeAi(key);
     const { question, transcript, diagramText, codeText, durationSeconds } = req.body;
     const qType: string = question?.type || "system_design";
     const roleLine =
@@ -380,8 +452,8 @@ ${categoryTemplate}
   "recommendedStudyTopics": ["string", "string"]
 }`;
 
-    if (apiKey) {
-      const response = await generateWithFallback({
+    {
+      const response = await generateWithFallback(ai, {
         contents: gradingPrompt,
         config: {
           responseMimeType: "application/json",
@@ -406,7 +478,6 @@ ${categoryTemplate}
       return res.json(parsed);
     }
 
-    res.status(500).json({ error: "GEMINI_API_KEY is not set on the server." });
   } catch (error: any) {
     console.error("Grading error:", error);
     res.status(500).json({
@@ -461,9 +532,23 @@ Scale or constraints: ${q.scale}`;
 const server = http.createServer(app);
 
 // Setup WebSocket server for Gemini Live & Voice session
-const wss = new WebSocketServer({ server, path: "/ws/live" });
+const wss = new WebSocketServer({ server, path: "/ws/live", maxPayload: 1024 * 1024 });
 
-wss.on("connection", (clientWs: WebSocket) => {
+const LEASE_MS = 60_000;
+
+wss.on("connection", (clientWs: WebSocket, req) => {
+  // Authenticate from the session cookie. Messages wait for this before doing anything.
+  const authReady: Promise<AuthUser | null> = originAllowed(req)
+    ? userFromCookieHeader(req.headers.cookie).catch(() => null)
+    : Promise.resolve(null);
+  let ai: GoogleGenAI | null = null;
+  let userId: string | null = null;
+  let leaseHolder: string | null = null;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  const sendJson = (o: object) => {
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify(o));
+  };
+
   let liveSession: any = null;
   let isConnected = false;
   let sessionMode: "live_socket" | "conversational_engine" = "conversational_engine";
@@ -480,6 +565,15 @@ wss.on("connection", (clientWs: WebSocket) => {
 
   const cleanupSession = async () => {
     sessionGen++;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    if (userId && leaseHolder) {
+      const holder = leaseHolder;
+      leaseHolder = null;
+      await releaseLease(userId, holder);
+    }
     if (liveSession) {
       try {
         await liveSession.close();
@@ -523,8 +617,8 @@ Remember:
 - Never say bracketed tags or system wording out loud. Speak only as the interviewer.
 Interviewer Spoken Response:`;
 
-      if (apiKey) {
-        const response = await generateWithFallback({
+      if (ai) {
+        const response = await generateWithFallback(ai, {
           contents: promptContext,
         });
 
@@ -579,12 +673,46 @@ Interviewer Spoken Response:`;
 
   clientWs.on("message", async (rawMessage) => {
     try {
+      const user = await authReady;
+      if (!user) {
+        sendJson({ type: "error", code: "unauthorized", error: "Please sign in again." });
+        clientWs.close(4401, "unauthorized");
+        return;
+      }
+      userId = user.id;
       const msg = JSON.parse(rawMessage.toString());
 
       if (msg.type === "start") {
         await cleanupSession();
 
         pushToTalk = !!msg.pushToTalk;
+
+        const key = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
+        if (!validKey(key)) {
+          sendJson({ type: "error", code: "no_key", error: "Add your Gemini API key first (Account menu, Gemini key)." });
+          return;
+        }
+        ai = makeAi(key);
+
+        // One live interview per account, across all tabs, devices and server instances
+        const holder = crypto.randomUUID();
+        if (!(await acquireLease(user.id, holder, LEASE_MS))) {
+          sendJson({
+            type: "error",
+            code: "live_limit",
+            error: "You already have a live interview running. End it, or close the other tab, then try again.",
+          });
+          return;
+        }
+        leaseHolder = holder;
+        heartbeat = setInterval(async () => {
+          if (!leaseHolder) return;
+          const ok = await renewLease(user.id, leaseHolder, LEASE_MS).catch(() => true);
+          if (!ok) {
+            sendJson({ type: "status", status: "closed", message: "This interview was ended because it was started somewhere else." });
+            cleanupSession();
+          }
+        }, 20_000);
         const gen = sessionGen;
         const questionId = msg.questionId;
         const found = SYSTEM_DESIGN_QUESTIONS.find((q) => q.id === questionId);
@@ -607,14 +735,14 @@ Interviewer Spoken Response:`;
 
         const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
 
-        // Try connecting via Gemini Live API first if apiKey is set
+        // Try connecting via Gemini Live API first
         let liveConnected = false;
-        if (apiKey) {
+        if (ai) {
           // Attempt Live API connection
           const liveModelsToTry = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
           for (const modelCandidate of liveModelsToTry) {
             try {
-              liveSession = await ai.live.connect({
+              liveSession = await ai!.live.connect({
                 model: modelCandidate,
                 config: {
                   responseModalities: [Modality.AUDIO],
@@ -883,6 +1011,7 @@ Interviewer Spoken Response:`;
 
 // Vite or Static handling
 async function startServer() {
+  await connectDb();
   const isProd = process.env.NODE_ENV === "production";
   if (!isProd) {
     const { createServer: createViteServer } = await import("vite");
@@ -902,6 +1031,21 @@ async function startServer() {
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`> Bar Raiser server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Graceful shutdown: end live sessions so their leases are released before the database closes
+  const shutdown = async () => {
+    console.log("Shutting down...");
+    for (const c of wss.clients) c.close(1001, "server restarting");
+    server.close();
+    await new Promise((r) => setTimeout(r, 1500));
+    await closeDb();
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
+});
