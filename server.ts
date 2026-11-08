@@ -23,6 +23,8 @@ import {
   AuthUser,
 } from "./server/auth.ts";
 import { registerInterviewRoutes } from "./server/interviews.ts";
+import { registerLiveSessionRoutes, loadLiveSession } from "./server/liveSessions.ts";
+import { buildResumeTurns, resumeInstruction, ResumeContext } from "./server/resume.ts";
 import { rateLimit } from "./server/limits.ts";
 import { Timing, DEFAULT_TIMING, normalizeTiming, timingPhrase, gradingTimingNote, timerMessage } from "./prompts/timing.ts";
 import { generate, extractJson, LlmConfig, LlmError, Provider, PROVIDERS, PROVIDER_LABEL, MODEL_NAME_RE } from "./server/llm.ts";
@@ -53,6 +55,7 @@ app.use(sameOriginOnly);
 app.use(attachUser());
 registerAuthRoutes(app);
 registerInterviewRoutes(app);
+registerLiveSessionRoutes(app);
 
 /** Limits on what a user can send us. The same numbers are enforced in the browser. */
 const LIMITS = {
@@ -855,6 +858,32 @@ Interviewer Spoken Response:`;
           };
         }
 
+        // Rejoining a saved interview: rebuild from what the server saved, not from what the browser sends
+        let resume: ResumeContext | null = null;
+        if (typeof msg.resumeSessionId === "string") {
+          const saved = await loadLiveSession(user.id, msg.resumeSessionId);
+          const d: any = saved?.data;
+          if (saved && d && d.question && Array.isArray(d.transcript) && d.transcript.length > 0) {
+            currentQuestion = d.question as SystemDesignQuestion;
+            timing = normalizeTiming(d.timing);
+            currentPhase = String(d.phaseLabel || currentPhase);
+            latestCodeContext = String(d.code || "");
+            latestDiagramContext = String(d.diagramText || "");
+            // The interviewer is about to be given these snapshots, so do not send them again right away
+            if (latestCodeContext) lastContext.code = { sent: latestCodeContext, at: Date.now() };
+            if (latestDiagramContext) lastContext.diagram = { sent: latestDiagramContext, at: Date.now() };
+            resume = {
+              transcript: d.transcript,
+              code: latestCodeContext,
+              codeLanguage: String(d.codeLanguage || "Python"),
+              diagramText: latestDiagramContext,
+              elapsedSeconds: Number(d.elapsedSeconds) || 0,
+              timing,
+              minutesAway: Math.round((Date.now() - saved.updatedAt) / 60000),
+            };
+          }
+        }
+
         const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing);
 
         // Try connecting via Gemini Live API first
@@ -997,7 +1026,10 @@ Interviewer Spoken Response:`;
         if (liveConnected && liveSession) {
           isConnected = true;
           sessionMode = "live_socket";
-          if (msg.kickoff !== false) {
+          if (resume) {
+            // Give the new voice session the earlier conversation as text, then ask it to welcome the candidate back
+            liveSession.sendClientContent({ turns: buildResumeTurns(resume).turns, turnComplete: true });
+          } else if (msg.kickoff !== false) {
             liveSession.sendClientContent({
               turns: [
                 {
@@ -1025,11 +1057,14 @@ Interviewer Spoken Response:`;
             })
           );
 
-          // Deliver opening prompt
-          await generateInterviewerTurn(
-            kickoffInstruction(currentQuestion, timing),
-            true
-          );
+          if (resume) {
+            conversationHistory = resume.transcript.map((t) => ({ role: t.role === "user" ? ("user" as const) : ("model" as const), text: String(t.text || "") }));
+            const unanswered = conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === "user";
+            await generateInterviewerTurn(resumeInstruction(resume, unanswered), false, true);
+          } else {
+            // Deliver opening prompt
+            await generateInterviewerTurn(kickoffInstruction(currentQuestion, timing), true);
+          }
         }
       } else if (msg.type === "audio") {
         if (liveSession && sessionMode === "live_socket" && isConnected) {

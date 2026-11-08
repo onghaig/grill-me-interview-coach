@@ -240,6 +240,42 @@ async function main() {
     check("another user's list is empty", (await b.req("GET", "/api/interviews")).json.interviews?.length === 0);
     check("another user cannot delete it", ((await b.req("DELETE", `/api/interviews/${id}`)), (await a.req("GET", `/api/interviews/${id}`)).status === 200));
 
+    // In-progress interviews (pause / rejoin / refresh)
+    const lsId = "ls_1700000000001";
+    const ls = {
+      status: "active",
+      question: { id: "tinyurl", title: "Design TinyURL", type: "system_design" },
+      timing: { mode: "normal" },
+      voice: "Sulafat",
+      phase: "design",
+      phaseLabel: "Design",
+      elapsedSeconds: 125,
+      transcript: [{ id: "1", role: "user", text: "hello", timestamp: "10:00" }],
+      code: "print(1)",
+      codeLanguage: "Python",
+      diagramText: "A->B",
+      scene: [{ id: "e1", type: "rectangle" }],
+    };
+    check("unauthenticated live-session list is refused", (await new Client().req("GET", "/api/live-sessions")).status === 401);
+    check("save live session", (await a.req("PUT", `/api/live-sessions/${lsId}`, ls)).status === 200);
+    check("bad live session id is rejected", (await a.req("PUT", "/api/live-sessions/..%2Fx", ls)).status === 400);
+    check("invalid live session body is rejected", (await a.req("PUT", `/api/live-sessions/ls_1700000000002`, { question: {} })).status === 400);
+    const lsList = (await a.req("GET", "/api/live-sessions")).json.sessions;
+    check("live session list shows it", lsList?.length === 1 && lsList[0].status === "active" && lsList[0].elapsedSeconds === 125 && lsList[0].turns === 1, lsList);
+    const lsFull = (await a.req("GET", `/api/live-sessions/${lsId}`)).json;
+    check("live session restores code, diagram, scene and phase", lsFull.code === "print(1)" && lsFull.diagramText === "A->B" && lsFull.scene?.length === 1 && lsFull.phase === "design", lsFull);
+    await a.req("POST", `/api/live-sessions/${lsId}`, { ...ls, status: "paused", elapsedSeconds: 200 });
+    const lsPaused = (await a.req("GET", `/api/live-sessions/${lsId}`)).json;
+    check("a later save (beacon POST) pauses it and keeps one record", lsPaused.status === "paused" && lsPaused.elapsedSeconds === 200 && (await a.req("GET", "/api/live-sessions")).json.sessions.length === 1, lsPaused);
+    check("another user cannot read a live session", (await b.req("GET", `/api/live-sessions/${lsId}`)).status === 404);
+    check("another user's live list is empty", (await b.req("GET", "/api/live-sessions")).json.sessions?.length === 0);
+    await b.req("DELETE", `/api/live-sessions/${lsId}`);
+    check("another user cannot delete it", (await a.req("GET", `/api/live-sessions/${lsId}`)).status === 200);
+    for (let i = 2; i <= 5; i++) await a.req("PUT", `/api/live-sessions/ls_170000000000${i}`, ls);
+    check("sixth in-progress interview is refused", (await a.req("PUT", `/api/live-sessions/ls_1700000000009`, ls)).status === 409);
+    for (let i = 1; i <= 5; i++) await a.req("DELETE", `/api/live-sessions/ls_170000000000${i}`);
+    check("discard removes it", (await a.req("GET", "/api/live-sessions")).json.sessions?.length === 0);
+
     // WebSocket auth
     const un = await openWs("");
     await sleep(100);

@@ -21,6 +21,8 @@ interface BehavioralInterviewProps {
   timing: Timing;
   onStart: () => void;
   onEnd: () => void;
+  /** Stop the call and save the interview so it can be rejoined later. */
+  onPause: () => void;
   onSendText: (text: string) => void;
   onPttPress: () => void;
   onPttRelease: () => void;
@@ -48,6 +50,7 @@ export function BehavioralInterview({
   elapsedSeconds,
   onStart,
   onEnd,
+  onPause,
   onSendText,
   onPttPress,
   onPttRelease,
@@ -103,6 +106,15 @@ export function BehavioralInterview({
             {formatTimer(remainingSeconds === null ? elapsedSeconds : remainingSeconds)}
             {remainingSeconds === null && <span className="ml-2 text-[10px] text-slate-500 uppercase">practice</span>}
           </span>
+          {isInterviewActive && (
+            <button
+              onClick={onPause}
+              className="px-3 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:text-slate-100 hover:border-slate-500 text-xs font-semibold"
+              title="Pause and come back later. Your progress is saved."
+            >
+              Pause
+            </button>
+          )}
           {isInterviewActive && (
             <button
               onClick={onEnd}
@@ -165,7 +177,7 @@ export function BehavioralInterview({
               className="w-full py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-sm font-semibold flex items-center justify-center gap-2"
             >
               <Play className="w-4 h-4 fill-white" />
-              {isConnecting ? 'Starting...' : transcripts.length ? 'Reconnect' : 'Start interview'}
+              {isConnecting ? (transcripts.length ? 'Rejoining...' : 'Starting...') : transcripts.length ? 'Rejoin interview' : 'Start interview'}
             </button>
           ) : (
             <>

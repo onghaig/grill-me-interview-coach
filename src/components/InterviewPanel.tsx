@@ -30,6 +30,10 @@ interface InterviewPanelProps {
   onSelectPhase: (phase: InterviewPhase) => void;
   isInterviewActive: boolean;
   onStartInterview: () => void;
+  /** Stop the call and save the interview so it can be rejoined later. */
+  onPause: () => void;
+  /** The interview has already begun (for example after a refresh), so starting means rejoining. */
+  canRejoin: boolean;
   onEndInterview: () => void;
   isConnecting: boolean;
   transcripts: TranscriptEntry[];
@@ -60,6 +64,8 @@ export function InterviewPanel({
   onSelectPhase,
   isInterviewActive,
   onStartInterview,
+  onPause,
+  canRejoin,
   onEndInterview,
   isConnecting,
   transcripts,
@@ -413,7 +419,7 @@ export function InterviewPanel({
               className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition"
             >
               <Play className="w-4 h-4 fill-white" />
-              <span>{isConnecting ? 'Starting Session...' : 'Start Interview'}</span>
+              <span>{isConnecting ? (canRejoin ? 'Rejoining...' : 'Starting Session...') : canRejoin ? 'Rejoin interview' : 'Start Interview'}</span>
             </button>
           ) : (
             <button
@@ -422,6 +428,15 @@ export function InterviewPanel({
             >
               <Square className="w-4 h-4 fill-white" />
               <span>End Interview & Grade</span>
+            </button>
+          )}
+          {isInterviewActive && (
+            <button
+              onClick={onPause}
+              className="py-2.5 px-3 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:text-slate-100 hover:border-slate-500 text-xs font-semibold transition"
+              title="Pause and come back later. Your progress is saved."
+            >
+              Pause
             </button>
           )}
 
