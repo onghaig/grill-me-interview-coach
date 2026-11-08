@@ -87,7 +87,7 @@ function startMock(kind: "openai" | "anthropic", port: number): Promise<http.Ser
 async function main() {
   const mocks = [await startMock("openai", 3391), await startMock("anthropic", 3392)];
   const server = spawn("npx", ["tsx", "server.ts"], {
-    env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", NODE_ENV: "development", OPENAI_BASE_URL: "http://localhost:3391/v1", ANTHROPIC_BASE_URL: "http://localhost:3392" },
+    env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", GEN_RATE_LIMIT_PER_MIN: "500", NODE_ENV: "development", OPENAI_BASE_URL: "http://localhost:3391/v1", ANTHROPIC_BASE_URL: "http://localhost:3392" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -191,6 +191,13 @@ async function main() {
     check("grading omits empty whiteboard and code sections", !/WHITEBOARD|FINAL CODE/.test(JSON.stringify(grSeen.body.messages)));
     void gr;
 
+    // Timing reaches the grader
+    await a.req("POST", "/api/grade", { question: { title: "Design a cache", type: "system_design" }, transcript: [{ role: "user", text: "hi" }], durationSeconds: 600, timing: { mode: "practice" } }, { ...gk, "x-llm-provider": "openai", "x-llm-key": oaiKey });
+    const prSeen = JSON.stringify(seen.openai[seen.openai.length - 1].body.messages);
+    check("grading is told a practice session was untimed", /untimed practice session/.test(prSeen) && /Do not judge pacing/.test(prSeen));
+    await a.req("POST", "/api/grade", { question: { title: "Design a cache", type: "system_design" }, transcript: [{ role: "user", text: "hi" }], durationSeconds: 600, timing: { mode: "timed", minutes: 45 } }, { ...gk, "x-llm-provider": "openai", "x-llm-key": oaiKey });
+    check("grading is told the length of a timed interview", /timed 45 minute interview/.test(JSON.stringify(seen.openai[seen.openai.length - 1].body.messages)));
+
     // Errors are explained per provider
     const q429 = await a.req("POST", "/api/rubric", { prompt: "x" }, { ...gk, "x-llm-provider": "openai", "x-llm-key": "sk-QUOTA-0123456789abcdef0123" });
     check("OpenAI quota error is explained", q429.status === 429 && q429.json.code === "key_quota" && /OpenAI/.test(q429.json.error), q429.json);
@@ -221,12 +228,14 @@ async function main() {
       scorecard: { totalScore: 77, overallVerdict: "Hire" },
     };
     const id = "iv_1700000000001";
-    const put = await a.req("PUT", `/api/interviews/${id}`, iv);
+    const put = await a.req("PUT", `/api/interviews/${id}`, { ...iv, timing: { mode: "practice" } });
     check("save interview", put.status === 200 && put.json.summary?.score === 77, put.json);
     check("bad interview id is rejected", (await a.req("PUT", "/api/interviews/..%2F..", iv)).status === 400);
     const list = await a.req("GET", "/api/interviews");
     check("list shows the interview", list.json.interviews?.length === 1 && list.json.interviews[0].title === "Design a cache", list.json);
-    check("get returns the full record", (await a.req("GET", `/api/interviews/${id}`)).json.interview?.transcript?.length === 1);
+    const full = (await a.req("GET", `/api/interviews/${id}`)).json.interview;
+    check("get returns the full record", full?.transcript?.length === 1);
+    check("the saved record keeps its timing", full?.timing?.mode === "practice", full?.timing);
     check("another user cannot read it", (await b.req("GET", `/api/interviews/${id}`)).status === 404);
     check("another user's list is empty", (await b.req("GET", "/api/interviews")).json.interviews?.length === 0);
     check("another user cannot delete it", ((await b.req("DELETE", `/api/interviews/${id}`)), (await a.req("GET", `/api/interviews/${id}`)).status === 200));

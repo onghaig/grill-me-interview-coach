@@ -1,5 +1,6 @@
 import { ScorecardData, TranscriptEntry } from '../types';
 import { SystemDesignQuestion } from '../../prompts/interviewer';
+import { Timing } from '../../prompts/timing';
 import { api } from './api';
 
 export interface SavedInterview {
@@ -13,6 +14,8 @@ export interface SavedInterview {
   code: string;
   codeLanguage: string;
   durationSeconds: number;
+  /** How the interview was run. Missing on interviews saved before timing options existed. */
+  timing?: Timing;
   scorecard: ScorecardData | null;
 }
 

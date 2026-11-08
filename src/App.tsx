@@ -16,6 +16,7 @@ import { AudioRecorder, AudioPlayer } from './utils/audio';
 import { MicGate } from './utils/micGate';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
+import { Timing, DEFAULT_TIMING, timeLimitSeconds } from '../prompts/timing';
 
 export default function App() {
   const [currentQuestion, setCurrentQuestion] = useState<SystemDesignQuestion>(SYSTEM_DESIGN_QUESTIONS[0]);
@@ -43,7 +44,12 @@ export default function App() {
   const codeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [micVolume, setMicVolume] = useState(0);
   const [hasMicrophone, setHasMicrophone] = useState(true);
-  const [remainingSeconds, setRemainingSeconds] = useState(30 * 60);
+  const [timing, setTiming] = useState<Timing>(DEFAULT_TIMING);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // Practice mode has no limit, so there is nothing remaining
+  const timeLimit = timeLimitSeconds(timing);
+  const remainingSeconds: number | null = timeLimit === null ? null : Math.max(0, timeLimit - elapsedSeconds);
+  const timeChecksSentRef = useRef<Set<number>>(new Set());
 
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [interimTranscript, setInterimTranscript] = useState<{
@@ -213,14 +219,7 @@ export default function App() {
   useEffect(() => {
     if (isInterviewActive) {
       interviewStartTimeRef.current = Date.now();
-      timerIntervalRef.current = setInterval(() => {
-        setRemainingSeconds((prev) => {
-          if (prev <= 1) {
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      timerIntervalRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
     } else {
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
@@ -234,6 +233,19 @@ export default function App() {
       }
     };
   }, [isInterviewActive]);
+
+  // In a timed interview, quietly tell the interviewer when time is getting short (practice mode never does)
+  useEffect(() => {
+    if (!isInterviewActive || remainingSeconds === null) return;
+    for (const t of [300, 60, 0]) {
+      if (remainingSeconds <= t && !timeChecksSentRef.current.has(t)) {
+        timeChecksSentRef.current.add(t);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'time_check', remainingSeconds: t }));
+        }
+      }
+    }
+  }, [remainingSeconds, isInterviewActive]);
 
   // Diagram update handler from Excalidraw (debounced 3s by WhiteboardCanvas)
   const handleDiagramUpdate = useCallback(
@@ -298,20 +310,21 @@ export default function App() {
     openEntryRef.current = null;
   };
 
-  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice });
+  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice, timing });
 
   const handleHomeStart = (question: SystemDesignQuestion, options: StartOptions) => {
     setCurrentQuestion(question);
     setIsPushToTalk(options.pushToTalk);
     isPushToTalkRef.current = options.pushToTalk;
     setVoice(options.voice);
+    setTiming(options.timing);
     setTranscripts([]);
     setLatestDiagramText('');
     setCode('');
     setWorkspaceTab(question.type === 'coding' ? 'code' : 'whiteboard');
     setScorecard(null);
     setCurrentPhase('clarify');
-    setRemainingSeconds(30 * 60);
+    setElapsedSeconds(0);
     openEntryRef.current = null;
     setView('interview');
     startSession(question, options);
@@ -325,6 +338,8 @@ export default function App() {
     audioPlayerRef.current?.unlock();
     openEntryRef.current = null;
     pttSendingRef.current = false;
+    // Reminders for thresholds that have already passed (for example when rejoining late) are not repeated
+    timeChecksSentRef.current = new Set([300, 60, 0].filter((t) => (timeLimitSeconds(options.timing) ?? Infinity) - elapsedSeconds <= t && elapsedSeconds > 0));
 
     try {
       // Connect WebSocket
@@ -345,6 +360,7 @@ export default function App() {
             llm: llmForSocket(),
             liveModel: voiceModelForSocket(),
             pushToTalk: options.pushToTalk,
+            timing: options.timing,
             kickoff: true,
           })
         );
@@ -508,6 +524,7 @@ export default function App() {
     diagramText: string;
     codeText: string;
     durationSeconds: number;
+    timing?: Timing;
   }): Promise<ScorecardData> => {
     return api<ScorecardData>('/api/grade', { body: payload, withKey: 'grading' });
   };
@@ -526,6 +543,7 @@ export default function App() {
         code,
         codeLanguage,
         durationSeconds: interviewDurationSeconds,
+        timing,
         scorecard,
       }
     );
@@ -540,6 +558,7 @@ export default function App() {
       diagramText: entry.diagramText,
       codeText: codeTextFor(entry.code, entry.codeLanguage),
       durationSeconds: entry.durationSeconds,
+      timing: entry.timing,
     });
     const updated = { ...entry, scorecard };
     setReviewRecord(updated);
@@ -548,7 +567,7 @@ export default function App() {
 
   // End interview session & trigger grading
   const handleEndInterview = async () => {
-    const elapsed = Math.round(30 * 60 - remainingSeconds);
+    const elapsed = elapsedSeconds;
     setInterviewDurationSeconds(elapsed);
 
     // Snapshot the whiteboard before anything else; skip very large images so storage is not exhausted
@@ -574,6 +593,7 @@ export default function App() {
         code,
         codeLanguage,
         durationSeconds: elapsed,
+        timing,
         scorecard: null,
       };
       recordRef.current = record;
@@ -617,6 +637,7 @@ export default function App() {
         diagramText: latestDiagramText,
         codeText: codeTextFor(code, codeLanguage),
         durationSeconds: elapsed,
+        timing,
       });
       if (recordRef.current) {
         recordRef.current = { ...recordRef.current, scorecard: scorecardData };
@@ -744,6 +765,8 @@ export default function App() {
           micVolume={micVolume}
           hasMicrophone={hasMicrophone}
           remainingSeconds={remainingSeconds}
+          elapsedSeconds={elapsedSeconds}
+          timing={timing}
           onStart={handleStartInterview}
           onEnd={handleEndInterview}
           onSendText={handleSendCandidateText}
@@ -809,7 +832,7 @@ export default function App() {
           currentQuestion={currentQuestion}
           onSelectQuestion={(q) => {
             setCurrentQuestion(q);
-            setRemainingSeconds(30 * 60);
+            setElapsedSeconds(0);
           }}
           currentPhase={currentPhase}
           onSelectPhase={handlePhaseChange}
@@ -826,6 +849,8 @@ export default function App() {
           micVolume={micVolume}
           hasMicrophone={hasMicrophone}
           remainingSeconds={remainingSeconds}
+          elapsedSeconds={elapsedSeconds}
+          timing={timing}
           latestDiagramText={latestDiagramText}
           onSendCoachGuidance={handleSendCoachGuidance}
           onSendCandidateText={handleSendCandidateText}

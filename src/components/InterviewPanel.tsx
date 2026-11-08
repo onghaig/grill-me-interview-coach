@@ -18,6 +18,7 @@ import {
   Send,
 } from 'lucide-react';
 import { InterviewPhase, getPhases, TranscriptEntry } from '../types';
+import { Timing, scaledPhaseMinutes } from '../../prompts/timing';
 import { InterviewerFace } from './InterviewerFace';
 import { Markdown } from './Markdown';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../../prompts/interviewer';
@@ -39,7 +40,10 @@ interface InterviewPanelProps {
   isSpacePressed: boolean;
   micVolume: number;
   hasMicrophone: boolean;
-  remainingSeconds: number;
+  /** Null in practice mode, which has no time limit. */
+  remainingSeconds: number | null;
+  elapsedSeconds: number;
+  timing: Timing;
   latestDiagramText: string;
   onSendCoachGuidance: (guidance: string) => void;
   onSendCandidateText: (text: string) => void;
@@ -67,6 +71,8 @@ export function InterviewPanel({
   micVolume,
   hasMicrophone,
   remainingSeconds,
+  elapsedSeconds,
+  timing,
   latestDiagramText,
   onSendCoachGuidance,
   onSendCandidateText,
@@ -290,7 +296,9 @@ export function InterviewPanel({
           <div className="flex items-center gap-1.5">
             <Clock
               className={`w-3.5 h-3.5 ${
-                remainingSeconds < 300
+                remainingSeconds === null
+                  ? 'text-slate-500'
+                  : remainingSeconds < 300
                   ? 'text-rose-400'
                   : remainingSeconds < 600
                   ? 'text-amber-400'
@@ -299,16 +307,20 @@ export function InterviewPanel({
             />
             <span
               className={`font-mono font-bold text-sm tracking-wider ${
-                remainingSeconds < 300
+                remainingSeconds === null
+                  ? 'text-slate-300'
+                  : remainingSeconds < 300
                   ? 'text-rose-400'
                   : remainingSeconds < 600
                   ? 'text-amber-400'
                   : 'text-slate-100'
               }`}
             >
-              {formatTimer(remainingSeconds)}
+              {formatTimer(remainingSeconds === null ? elapsedSeconds : remainingSeconds)}
             </span>
-            <span className="text-[10px] text-slate-500 font-mono uppercase">remaining</span>
+            <span className="text-[10px] text-slate-500 font-mono uppercase">
+              {remainingSeconds === null ? 'practice, no limit' : 'remaining'}
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -346,7 +358,9 @@ export function InterviewPanel({
                 title={phase.description}
               >
                 <span className="font-bold truncate w-full">{phase.label}</span>
-                <span className="text-[8px] opacity-75 font-mono">{phase.durationMinutes}m</span>
+                {timing.mode === 'timed' && (
+                  <span className="text-[8px] opacity-75 font-mono">{scaledPhaseMinutes(phase.durationMinutes, timing)}m</span>
+                )}
               </button>
             );
           })}

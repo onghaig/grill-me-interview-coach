@@ -24,6 +24,7 @@ import {
 } from "./server/auth.ts";
 import { registerInterviewRoutes } from "./server/interviews.ts";
 import { rateLimit } from "./server/limits.ts";
+import { Timing, DEFAULT_TIMING, normalizeTiming, timingPhrase, gradingTimingNote, timerMessage } from "./prompts/timing.ts";
 import { generate, extractJson, LlmConfig, LlmError, Provider, PROVIDERS, PROVIDER_LABEL, MODEL_NAME_RE } from "./server/llm.ts";
 
 dotenv.config();
@@ -105,7 +106,7 @@ function llmFromRequest(req: express.Request, res: express.Response): LlmConfig 
   }
   return { provider, key, model };
 }
-const perUser = rateLimit({ max: 20, key: (r) => `gen:${r.user?.id || r.ip}` });
+const perUser = rateLimit({ max: Number(process.env.GEN_RATE_LIMIT_PER_MIN) || 20, key: (r) => `gen:${r.user?.id || r.ip}` });
 
 /** Turn a model-provider failure into something a user can act on, instead of a wall of JSON. */
 function sendLlmError(res: express.Response, what: string, err: any) {
@@ -283,7 +284,7 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
 });
 
 const BEHAVIORAL_PROMPT = (opts: { resumeText: string; hasPdf: boolean; principles: string; role: string }) => `You are a hiring manager and bar raiser who runs behavioral interviews.
-Design a 30-minute behavioral interview for a candidate.
+Design a behavioral interview for a candidate. The length is chosen later, so order the questions by priority: the interviewer may not reach the last ones.
 
 ${opts.role ? `Role or company context from the candidate:\n"""\n${opts.role}\n"""\n` : ""}
 ${opts.principles ? `Leadership principles, values or business information the interview must assess:\n"""\n${opts.principles}\n"""\n` : "No principles were supplied, so assess common senior-engineer leadership competencies (ownership, dealing with ambiguity, conflict, influencing without authority, raising the bar, delivering results, learning from failure).\n"}
@@ -292,7 +293,7 @@ Output ONLY valid JSON:
 {
   "title": "Behavioral interview: short role/company or theme, e.g. Behavioral interview: Senior Engineer at Acme",
   "difficulty": "Medium" | "Hard",
-  "scale": "e.g. About 30 minutes, 6 to 8 stories",
+  "scale": "e.g. 7 to 8 questions",
   "description": "Markdown. 2 sentences on what this interview covers, then a '**Focus areas**' line followed by a bullet list of the competencies or principles that will be assessed. Do NOT list the questions.",
   "candidateSummary": "PRIVATE. 3-5 sentences summarising the candidate's background from the resume: roles, years, notable projects with any numbers, seniority. Only facts in the resume. Empty string if no resume.",
   "plannedQuestions": [
@@ -408,7 +409,7 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
         question.plannedQuestions = planned;
         const summary = String(raw.candidateSummary || "").trim();
         if (summary) question.questionNotes = `Candidate background (from the resume): ${summary}\n\n${question.questionNotes}`;
-        question.scale = String(raw.scale || "About 30 minutes, 6 to 8 stories");
+        question.scale = String(raw.scale || "7 to 8 questions");
         return res.json({ question });
       } catch (err) {
         lastErr = err;
@@ -426,6 +427,7 @@ app.post("/api/grade", requireAuth, perUser, async (req, res) => {
     const llm = llmFromRequest(req, res);
     if (!llm) return;
     const { question, transcript, diagramText, codeText, durationSeconds } = req.body;
+    const gradeTiming = normalizeTiming(req.body?.timing);
     const qType: string = question?.type || "system_design";
     const roleLine =
       qType === "behavioral"
@@ -521,7 +523,7 @@ In your feedback, say which must-cover topics were hit or missed and call out an
     const gradingPrompt = `You are ${roleLine}. Grade this ${kind} interview strictly on evidence.
 
 QUESTION: ${question?.title || "Interview question"}
-${question?.scale ? `Scope: ${question.scale}\n` : ""}${question?.description ? `${question.description}\n` : ""}${rubricBlock}Duration: ${Math.round((durationSeconds || 0) / 60)} minutes.
+${question?.scale ? `Scope: ${question.scale}\n` : ""}${question?.description ? `${question.description}\n` : ""}${rubricBlock}Duration: ${Math.round((durationSeconds || 0) / 60)} minutes. ${gradingTimingNote(gradeTiming)}
 ${typeNote}
 ${showDiagram ? `\nWHITEBOARD (text serialization of the final diagram):\n${diagramText}\n` : ""}${showCode ? `\nFINAL CODE:\n${codeText}\n` : ""}
 TRANSCRIPT:
@@ -566,12 +568,13 @@ ${categoryTemplate}
 });
 
 // The opening turn is the one place the interviewer talks at length
-function kickoffInstruction(q: SystemDesignQuestion): string {
+function kickoffInstruction(q: SystemDesignQuestion, timing: Timing = DEFAULT_TIMING): string {
+  const length = timingPhrase(timing);
   if (q.type === "behavioral") {
     const first = q.plannedQuestions?.[0];
     return `[START OF INTERVIEW] The candidate has just joined the call. Open the behavioral interview like a real interviewer, in this order, as natural speech:
 1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
-2. In one or two sentences, explain the format: about thirty minutes, a conversation about their past experience, you'll ask for specific examples, and it's fine to take a moment to think.
+2. In one or two sentences, explain the format: ${length}, a conversation about their past experience, you'll ask for specific examples, and it's fine to take a moment to think.
 3. If the private notes contain a candidate background, say naturally that you've had a look at their background and mention one concrete thing from it. Do not recite their resume.
 4. Then ask exactly this FIRST question, in natural spoken words but keeping its meaning and every specific in it (company, project, numbers), and stop. Do not substitute a different question. ${first ? `First question: "${first.question}"${first.anchor ? ` (based on: ${first.anchor})` : ""}` : "Ask a friendly warm-up about their current role and background."}
 
@@ -599,7 +602,7 @@ Interview focus (private reference): ${q.title}. ${q.description}`;
       : "Mention the scale in plain spoken numbers, but do not propose any components.";
   return `[START OF INTERVIEW] The candidate has just joined the call. Open the ${kind} like a real interviewer, in this order, as natural speech:
 1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
-2. In one sentence, explain the format: about thirty minutes, they can talk through their thinking, and they have a whiteboard and a code editor, and you can see both.
+2. In one sentence, explain the format: ${length}, they can talk through their thinking, and they have a whiteboard and a code editor, and you can see both.
 3. Explain the problem in your own words, conversationally, like you're describing it to a colleague. Do not read it verbatim and do not use lists. ${exampleLine}
 4. Finish by inviting them to ask any clarifying questions before they start, and ask what they'd like to pin down first.
 This opening is the one exception to the short-turns rule: speak for roughly 20 to 40 seconds, but keep it flowing and friendly, and never reveal the solution.
@@ -640,6 +643,7 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   let latestDiagramContext = "";
   let currentPhase = "Clarify requirements";
   let pushToTalk = false;
+  let timing: Timing = DEFAULT_TIMING;
   let sessionGen = 0;
   let latestCodeContext = "";
 
@@ -696,7 +700,7 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   // Helper to generate a conversational turn using Gemini 3.8 Flash
   const generateInterviewerTurn = async (userPrompt: string, isKickoff = false, isEvent = false) => {
     try {
-      const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
+      const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing);
       const coachGuidance = coachNotes.length
         ? `\nPrivate guidance from the evaluator. Act on it in your own words at this turn. Never quote it, never mention an evaluator or coach:\n${coachNotes.map((n) => `- ${n}`).join('\n')}\n`
         : '';
@@ -744,7 +748,7 @@ Interviewer Spoken Response:`;
       // Contextual fallback response if API key is not yet set
       let fallbackReply = "";
       if (isKickoff) {
-        fallbackReply = `Hi, welcome, and thanks for joining. I'll be your interviewer today. We've got about thirty minutes, so feel free to think out loud, and use the whiteboard or the code editor, since I can see both. Today's problem is: ${currentQuestion.title}. ${currentQuestion.description.replace(/[*`#]/g, "")} Before you dive in, what questions do you have, or what would you like to pin down first?`;
+        fallbackReply = `Hi, welcome, and thanks for joining. I'll be your interviewer today. We've got ${timing.mode === "practice" ? "no time limit, so take as long as you need, and" : timingPhrase(timing) + ", so"} feel free to think out loud, and use the whiteboard or the code editor, since I can see both. Today's problem is: ${currentQuestion.title}. ${currentQuestion.description.replace(/[*`#]/g, "")} Before you dive in, what questions do you have, or what would you like to pin down first?`;
       } else if (latestDiagramContext && !conversationHistory.some(c => c.text.includes('whiteboard') || c.text.includes('diagram'))) {
         fallbackReply = `Looking at your whiteboard diagram, I see your components laid out. Can you walk me through the end-to-end lifecycle of a request from the client?`;
       } else if (currentPhase.toLowerCase().includes('estimate')) {
@@ -791,6 +795,7 @@ Interviewer Spoken Response:`;
         await cleanupSession();
 
         pushToTalk = !!msg.pushToTalk;
+        timing = normalizeTiming(msg.timing);
 
         const key = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
         if (!validKey(key)) {
@@ -850,7 +855,7 @@ Interviewer Spoken Response:`;
           };
         }
 
-        const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
+        const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing);
 
         // Try connecting via Gemini Live API first
         let liveConnected = false;
@@ -999,7 +1004,7 @@ Interviewer Spoken Response:`;
                   role: "user",
                   parts: [
                     {
-                      text: kickoffInstruction(currentQuestion),
+                      text: kickoffInstruction(currentQuestion, timing),
                     },
                   ],
                 },
@@ -1022,7 +1027,7 @@ Interviewer Spoken Response:`;
 
           // Deliver opening prompt
           await generateInterviewerTurn(
-            kickoffInstruction(currentQuestion),
+            kickoffInstruction(currentQuestion, timing),
             true
           );
         }
@@ -1068,6 +1073,14 @@ Interviewer Spoken Response:`;
         } else if (sessionMode === "conversational_engine" && isConnected) {
           // Held for the next turn, same as the live path: no immediate reply and not logged as candidate speech
           coachNotes.push(String(msg.text));
+        }
+      } else if (msg.type === "time_check") {
+        // Silent reminders near the end of a timed interview. Practice mode has no clock, so nothing is sent.
+        const note = timing.mode === "timed" ? timerMessage(Number(msg.remainingSeconds)) : null;
+        if (note && liveSession && sessionMode === "live_socket" && isConnected) {
+          liveSession.sendClientContent({ turns: [{ role: "user", parts: [{ text: note }] }], turnComplete: false });
+        } else if (note && sessionMode === "conversational_engine" && isConnected) {
+          conversationHistory.push({ role: "note", text: note });
         }
       } else if (msg.type === "phase_advance") {
         currentPhase = msg.label || msg.phase;

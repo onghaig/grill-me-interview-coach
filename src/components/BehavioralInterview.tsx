@@ -3,6 +3,7 @@ import { Mic, MicOff, Play, Send, Square } from 'lucide-react';
 import { InterviewerFace } from './InterviewerFace';
 import { TranscriptEntry } from '../types';
 import { SystemDesignQuestion } from '../../prompts/interviewer';
+import { Timing } from '../../prompts/timing';
 
 interface BehavioralInterviewProps {
   question: SystemDesignQuestion;
@@ -14,7 +15,10 @@ interface BehavioralInterviewProps {
   isSpacePressed: boolean;
   micVolume: number;
   hasMicrophone: boolean;
-  remainingSeconds: number;
+  /** Null in practice mode, which has no time limit. */
+  remainingSeconds: number | null;
+  elapsedSeconds: number;
+  timing: Timing;
   onStart: () => void;
   onEnd: () => void;
   onSendText: (text: string) => void;
@@ -41,6 +45,7 @@ export function BehavioralInterview({
   micVolume,
   hasMicrophone,
   remainingSeconds,
+  elapsedSeconds,
   onStart,
   onEnd,
   onSendText,
@@ -92,10 +97,11 @@ export function BehavioralInterview({
         </div>
         <div className="flex items-center gap-4 shrink-0">
           <span
-            className={`font-mono text-sm tabular-nums ${remainingSeconds < 300 ? 'text-rose-400' : 'text-slate-300'}`}
-            aria-label="Time remaining"
+            className={`font-mono text-sm tabular-nums ${remainingSeconds !== null && remainingSeconds < 300 ? 'text-rose-400' : 'text-slate-300'}`}
+            aria-label={remainingSeconds === null ? 'Time elapsed' : 'Time remaining'}
           >
-            {formatTimer(remainingSeconds)}
+            {formatTimer(remainingSeconds === null ? elapsedSeconds : remainingSeconds)}
+            {remainingSeconds === null && <span className="ml-2 text-[10px] text-slate-500 uppercase">practice</span>}
           </span>
           {isInterviewActive && (
             <button

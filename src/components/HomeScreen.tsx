@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { InterviewSummary } from '../utils/history';
+import { Timing, DEFAULT_TIMING, TIMING_OPTIONS, normalizeTiming, timingId } from '../../prompts/timing';
 import { api } from '../utils/api';
 import { LIMITS } from '../utils/limits';
 import type { AccountUser } from './AuthScreen';
@@ -20,6 +21,7 @@ export const VOICES = [
 export interface StartOptions {
   pushToTalk: boolean;
   voice: string;
+  timing: Timing;
 }
 
 interface HomeScreenProps {
@@ -50,6 +52,23 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
   const [generated, setGenerated] = useState<SystemDesignQuestion | null>(null);
   const [pushToTalk, setPushToTalk] = useState(false);
   const [voice, setVoice] = useState(VOICES[0].id);
+  // The last timing choice is remembered between visits
+  const [timing, setTiming] = useState<Timing>(() => {
+    try {
+      return normalizeTiming(JSON.parse(localStorage.getItem('br-timing') || 'null'));
+    } catch {
+      return DEFAULT_TIMING;
+    }
+  });
+  const chooseTiming = (id: string) => {
+    const next = TIMING_OPTIONS.find((o) => o.id === id)?.timing ?? DEFAULT_TIMING;
+    setTiming(next);
+    try {
+      localStorage.setItem('br-timing', JSON.stringify(next));
+    } catch {
+      /* the choice just will not be remembered */
+    }
+  };
 
   const [mode, setMode] = useState<'technical' | 'behavioral'>('technical');
   const [resumeText, setResumeText] = useState('');
@@ -134,10 +153,25 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
     }
   };
 
-  const options: StartOptions = { pushToTalk, voice };
+  const options: StartOptions = { pushToTalk, voice, timing };
 
   const optionsBar = (
     <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs text-slate-400 flex items-center gap-2" htmlFor="timing-choice">
+                Timing
+                <select
+                  id="timing-choice"
+                  value={timingId(timing)}
+                  onChange={(e) => chooseTiming(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
+                >
+                  {TIMING_OPTIONS.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label} ({o.detail})
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="text-xs text-slate-400 flex items-center gap-2">
                 Voice
                 <select

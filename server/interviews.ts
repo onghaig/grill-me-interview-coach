@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { interviews, InterviewSummary } from "./db.ts";
 import { requireAuth } from "./auth.ts";
+import { normalizeTiming } from "../prompts/timing.ts";
 
 const ID_RE = /^iv_\d{10,16}$/;
 const MAX_PER_USER = 200;
@@ -42,6 +43,7 @@ function sanitize(id: string, b: any): Record<string, unknown> | null {
     code: String(b.code || "").slice(0, 40000),
     codeLanguage: String(b.codeLanguage || "Python").slice(0, 30),
     durationSeconds: Math.max(0, Number(b.durationSeconds) || 0),
+    timing: normalizeTiming(b.timing),
     scorecard: b.scorecard && typeof b.scorecard === "object" ? b.scorecard : null,
   };
 }

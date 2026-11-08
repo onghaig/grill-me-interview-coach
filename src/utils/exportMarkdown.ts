@@ -37,6 +37,7 @@ export function interviewToMarkdown(iv: SavedInterview, opts: { embedImage?: boo
   out.push(`difficulty: ${q.difficulty}`);
   out.push(`date: ${date.toISOString()}`);
   out.push(`duration_minutes: ${minutes}`);
+  out.push(`timing: ${iv.timing?.mode === 'practice' ? 'practice' : iv.timing?.mode === 'timed' ? `timed_${iv.timing.minutes}_minutes` : 'timed_30_minutes'}`);
   out.push(`overall_score: ${sc ? sc.totalScore : 'null'}`);
   out.push(`verdict: ${sc ? JSON.stringify(sc.overallVerdict) : 'null'}`);
   out.push(`graded: ${sc ? 'true' : 'false'}`);
