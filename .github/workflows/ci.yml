@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  # Lets the deploy workflow run the same checks before it ships anything
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+
+env:
+  # The integration test starts a temporary MongoDB; keep the binary between runs
+  MONGOMS_DOWNLOAD_DIR: ${{ github.workspace }}/.mongodb-binaries
+
+jobs:
+  test:
+    name: Typecheck, unit tests, build, integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Cache the test MongoDB binary
+        uses: actions/cache@v4
+        with:
+          path: .mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # Starts the real server and checks sign-up, per-user isolation, size limits,
+      # the one-live-interview lock, and every model provider against mock servers
+      - name: Integration tests
+        run: npm run test:integration
+
+  docker:
+    name: Docker image starts and serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build -t bar-raiser:ci .
+
+      - name: Run it against MongoDB and check it
+        run: |
+          docker run -d --name app --network host \
+            -e PORT=8080 -e MONGODB_URI=mongodb://127.0.0.1:27017 bar-raiser:ci
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:8080/healthz >/dev/null && break
+            sleep 2
+          done
+          curl -fs http://127.0.0.1:8080/healthz | grep -q '"ok":true'
+          curl -fs -o /dev/null http://127.0.0.1:8080/
+          # A wrong login must be rejected by the app, which proves the database round trip works
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/api/auth/login \
+            -H 'content-type: application/json' -d '{"email":"nobody@example.com","password":"wrong password 1"}')
+          test "$code" = "401"
+
+      - name: Show the app log if anything failed
+        if: failure()
+        run: docker logs app

@@ -1,0 +1,87 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One production deploy at a time; a newer push waits instead of cancelling a deploy half way
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # lets the job prove its identity to Google Cloud without a stored key
+
+jobs:
+  ci:
+    name: Verify
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: us-central1
+      SERVICE: bar-raiser
+      IMAGE: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/cloud-run-source-deploy/bar-raiser
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push the image
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+      # The new version starts with no traffic, under its own test URL. Settings such as the
+      # database secret, the 60 minute timeout and the instance cap carry over from the live service.
+      - name: Deploy the new version without sending it traffic
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:$GITHUB_SHA" \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --no-traffic --tag candidate --quiet
+
+      - name: Check the new version before anyone uses it
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json \
+            | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          echo "Candidate: $URL"
+          test -n "$URL"
+          curl -fsS --retry 5 --retry-delay 3 --retry-connrefused -o /dev/null "$URL/"
+          curl -fsS "$URL/api/questions" | grep -q '"questions"'
+          # The wrong-password answer comes from the app after a real database lookup
+          body=$(curl -sS -X POST "$URL/api/auth/login" -H 'content-type: application/json' \
+            -d '{"email":"nobody@example.com","password":"wrong password 1"}')
+          echo "$body" | grep -q 'Wrong email or password'
+
+      - name: Send traffic to the new version
+        run: |
+          gcloud run services update-traffic "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --to-latest
+          gcloud run services update-traffic "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --remove-tags candidate
+
+      - name: Check the live site
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='value(status.url)')
+          curl -fsS --retry 5 --retry-delay 3 -o /dev/null "$URL/"
+          echo "Live: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Revision: $(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='value(status.latestReadyRevisionName)')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Note that nothing was released
+        if: failure()
+        run: echo "The new version did not pass its checks. The live site is still on the previous version." >> "$GITHUB_STEP_SUMMARY"

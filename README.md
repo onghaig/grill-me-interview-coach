@@ -67,6 +67,20 @@ What the script sets, and why:
 
 No Gemini key is set on the server: each user adds their own in the app.
 
+## CI/CD (GitHub Actions)
+
+- **CI** (`.github/workflows/ci.yml`) runs on every push and pull request: typecheck, unit tests, the production build, the integration tests (real server, in-memory MongoDB, mock OpenAI and Anthropic servers), and a Docker job that builds the production image, runs it against MongoDB and checks that it serves.
+- **Deploy** (`.github/workflows/deploy.yml`) runs on pushes to `main`. It runs CI first, then builds the image, pushes it to Artifact Registry, and deploys it to Cloud Run **with no traffic**. It tests that new version on its own temporary URL (page loads, API answers, a database round trip works) and only then sends traffic to it. If any check fails, the live site stays on the previous version.
+- **No stored credentials.** GitHub proves its identity to Google with a short-lived token (Workload Identity Federation). The Google side trusts only this repository's `main` branch, and the deploy account can only deploy.
+
+One-time setup (needs `gcloud` and `gh` signed in):
+
+```bash
+PROJECT_ID=your-project-id REPO=owner/name ./scripts/setup-github-deploy.sh
+```
+
+This creates the deploy account and the trust rule, and sets the repository variables `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT`. To roll back a bad release, send traffic to the previous revision in the Cloud Run console, or revert the commit on `main`.
+
 ## Token efficiency
 
 The live voice model re-reads the whole conversation on every turn, so most of the cost comes from what accumulates in that conversation.
