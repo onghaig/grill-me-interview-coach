@@ -41,12 +41,27 @@ export interface PlannedQuestion {
   anchor?: string;
 }
 
+/** How a coding question can be run in the browser. "none" means the examples are read-only. */
+export interface CodingSpec {
+  mode: 'function' | 'design' | 'none';
+  /** Function name (mode "function") or class name (mode "design"). Class Solution with that method also works. */
+  entry: string;
+  /** One of plain | list | tree per argument: "list" and "tree" turn a Python list into a ListNode / TreeNode chain. */
+  argKinds: ('plain' | 'list' | 'tree')[];
+  /** plain | list | tree, or "arg0" when the function changes its first argument in place. */
+  returnKind: 'plain' | 'list' | 'tree' | 'arg0';
+  /** Compare list results ignoring order (for answers like "any order"). */
+  unordered?: boolean;
+  starterCode: string;
+  tests: { input: string; expected: string; hidden?: boolean }[];
+}
+
 export interface SystemDesignQuestion {
   id: string;
   /** Defaults to system_design when absent (the built-in classics). */
   type?: QuestionType;
   title: string;
-  difficulty: 'Medium' | 'Hard' | 'Very Hard';
+  difficulty: 'Easy' | 'Medium' | 'Hard' | 'Very Hard';
   scale: string;
   description: string;
   suggestedRequirements: {
@@ -59,6 +74,10 @@ export interface SystemDesignQuestion {
   rubric?: Rubric;
   /** Behavioral interviews only: the question plan the interviewer works through. */
   plannedQuestions?: PlannedQuestion[];
+  /** Library questions: the catalog id, a small SVG picture for the statement, and what the Run button can execute. */
+  libraryId?: string;
+  diagramSvg?: string;
+  coding?: CodingSpec;
 }
 
 export const SYSTEM_DESIGN_QUESTIONS: SystemDesignQuestion[] = [

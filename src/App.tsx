@@ -507,7 +507,8 @@ export default function App() {
     setTiming(options.timing);
     setTranscripts([]);
     setLatestDiagramText('');
-    setCode('');
+    setCode(question.coding?.starterCode ?? '');
+    if (question.coding?.starterCode) setCodeLanguage('Python');
     setWorkspaceTab(question.type === 'coding' ? 'code' : 'whiteboard');
     setScorecard(null);
     setCurrentPhase('clarify');
@@ -1058,6 +1059,14 @@ export default function App() {
               language={codeLanguage}
               onChange={handleCodeChange}
               onLanguageChange={handleLanguageChange}
+              spec={currentQuestion.coding}
+              onRunSummary={(summary) => {
+                // Let the interviewer see the latest run, by attaching it to the code it just received
+                const commented = summary.split('\n').map((l) => '# ' + l).join('\n');
+                if (wsRef.current?.readyState === WebSocket.OPEN && code.trim()) {
+                  wsRef.current.send(JSON.stringify({ type: 'code', text: `${code}\n\n# Result of the candidate's last run:\n${commented}`, language: codeLanguage }));
+                }
+              }}
             />
           </div>
         </div>

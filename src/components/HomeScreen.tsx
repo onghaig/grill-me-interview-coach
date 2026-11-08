@@ -1,3 +1,4 @@
+import { LibraryBrowser } from './LibraryBrowser';
 import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
@@ -527,6 +528,8 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
                 </button>
               ))}
             </div>
+            <h2 className="text-xs font-mono uppercase tracking-wider text-slate-500 mt-10 mb-3">Question library</h2>
+            <LibraryBrowser onPick={(q) => onStart(q, options)} />
 
               </>
             ) : (

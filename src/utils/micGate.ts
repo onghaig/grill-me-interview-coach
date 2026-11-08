@@ -23,8 +23,8 @@ export interface MicGateOptions {
 }
 
 export const DEFAULT_GATE: MicGateOptions = {
-  quietThreshold: 4,
-  speakingFloor: 20,
+  quietThreshold: 8,
+  speakingFloor: 28,
   echoMultiplier: 2,
   echoMargin: 8,
   prerollMs: 450,

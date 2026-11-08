@@ -43,6 +43,11 @@ export interface LiveSessionDoc {
   expiresAt: Date;
   data: Record<string, unknown>;
 }
+export interface LibraryQuestionDoc {
+  _id: string; // catalog id
+  question: Record<string, unknown>;
+  createdAt: number;
+}
 export interface LeaseDoc {
   _id: string; // userId
   holder: string;
@@ -105,6 +110,7 @@ export const users = (): Collection<UserDoc> => need().collection<UserDoc>("user
 export const sessions = (): Collection<SessionDoc> => need().collection<SessionDoc>("sessions");
 export const interviews = (): Collection<InterviewDoc> => need().collection<InterviewDoc>("interviews");
 export const liveSessions = (): Collection<LiveSessionDoc> => need().collection<LiveSessionDoc>("interview_sessions");
+export const libraryQuestions = (): Collection<LibraryQuestionDoc> => need().collection<LibraryQuestionDoc>("library_questions");
 export const leases = (): Collection<LeaseDoc> => need().collection<LeaseDoc>("live_leases");
 
 /**

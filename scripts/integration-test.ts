@@ -276,6 +276,13 @@ async function main() {
     for (let i = 1; i <= 5; i++) await a.req("DELETE", `/api/live-sessions/ls_170000000000${i}`);
     check("discard removes it", (await a.req("GET", "/api/live-sessions")).json.sessions?.length === 0);
 
+    // Question library
+    check("library requires login", (await new Client().req("GET", "/api/library")).status === 401);
+    const lib = (await a.req("GET", "/api/library")).json;
+    check("library lists the catalog", lib.entries?.length >= 225 && lib.entries.filter((e: any) => e.list === "neetcode150").length === 150 && Array.isArray(lib.cached), lib.entries?.length);
+    check("unknown library question is 404", (await a.req("POST", "/api/library/nope", {})).status === 404);
+    check("uncached library question needs a key", (await a.req("POST", "/api/library/nc-two-sum", {})).json.code === "no_key");
+
     // WebSocket auth
     const un = await openWs("");
     await sleep(100);

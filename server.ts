@@ -23,6 +23,7 @@ import {
   AuthUser,
 } from "./server/auth.ts";
 import { registerInterviewRoutes } from "./server/interviews.ts";
+import { registerLibraryRoutes, cleanSvg, cleanCoding, EXTRA_CODING, EXTRA_DESIGN } from "./server/library.ts";
 import { registerLiveSessionRoutes, loadLiveSession } from "./server/liveSessions.ts";
 import { buildResumeTurns, resumeInstruction, ResumeContext } from "./server/resume.ts";
 import { rateLimit } from "./server/limits.ts";
@@ -238,7 +239,7 @@ function normalizeRubricQuestion(raw: any, userPrompt: string) {
     c.weight = i === cats.length - 1 ? 100 - acc : Math.round((c.weight / total) * 100);
     acc += c.weight;
   });
-  const difficulty = ["Medium", "Hard", "Very Hard"].includes(raw.difficulty) ? raw.difficulty : "Hard";
+  const difficulty = ["Easy", "Medium", "Hard", "Very Hard"].includes(raw.difficulty) ? raw.difficulty : "Hard";
   const type = ["system_design", "low_level_design", "coding", "behavioral"].includes(raw.type) ? raw.type : "system_design";
   return {
     id: "custom-" + Date.now(),
@@ -284,6 +285,41 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
     console.error("Rubric generation error:", error);
     sendLlmError(res, "Building the question", error);
   }
+});
+
+registerLibraryRoutes(app, {
+  llmFromRequest,
+  sendLlmError,
+  perUser,
+  generate: async (llm, entry) => {
+    const topic = entry.type === "coding" ? `a ${entry.difficulty} coding problem in the "${entry.topic}" category, in the spirit of the classic "${entry.title}"` : entry.title;
+    const userPrompt = `${topic}. Interview type: ${entry.type}.${entry.type === "coding" ? " Write an ORIGINAL problem statement (new wording and new example values) for the same underlying task." : ""}`;
+    const extra = entry.type === "coding" ? EXTRA_CODING : EXTRA_DESIGN;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const text = await generate(llm, { prompt: RUBRIC_PROMPT(userPrompt) + "\n" + extra, json: true });
+        const raw = extractJson(text);
+        const q: any = normalizeRubricQuestion(raw, entry.title);
+        q.id = "lib-" + entry.id;
+        q.libraryId = entry.id;
+        q.type = entry.type;
+        q.title = entry.title;
+        q.difficulty = entry.difficulty;
+        const diagram = cleanSvg(raw?.diagramSvg);
+        if (diagram) q.diagramSvg = diagram;
+        if (entry.type === "coding") {
+          const spec = cleanCoding(raw?.coding);
+          if (!spec) throw new Error("Model returned no coding details.");
+          q.coding = spec;
+        }
+        return q;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  },
 });
 
 const BEHAVIORAL_PROMPT = (opts: { resumeText: string; hasPdf: boolean; principles: string; role: string }) => `You are a hiring manager and bar raiser who runs behavioral interviews.
