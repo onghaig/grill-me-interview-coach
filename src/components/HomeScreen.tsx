@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles, Loader2, ArrowLeft, Play, ShieldAlert, ListChecks, Radio, Mic, ChevronRight } from 'lucide-react';
+import { Sparkles, Loader2, ArrowLeft, Play, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { SavedInterview } from '../utils/history';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS, QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
@@ -105,12 +105,12 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
           <h1 className="font-display text-[2.6rem] leading-[1.1] font-medium tracking-tight mt-8 text-slate-50 text-balance">Practice the interview before the interview</h1>
           <p className="text-slate-400 mt-3 text-[15px] leading-relaxed max-w-2xl">
             Type any system design, low-level design or LeetCode-style question. The AI works out which it is,
-            builds a grading rubric, interviews you on it out loud, then scores you against that rubric.
+            writes the problem and a hidden grading rubric, interviews you on it out loud, then scores you against a rubric that stays hidden until you finish.
           </p>
         </div>
 
         <ol className="flex items-center gap-2 mb-6 text-xs text-slate-500">
-          {['Describe the question', 'Review the rubric', 'Interview'].map((label, i) => {
+          {['Describe the question', 'Check the problem', 'Interview'].map((label, i) => {
             const active = (!generated && i === 0) || (generated && i === 1);
             const done = generated && i === 0;
             return (
@@ -168,11 +168,11 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                 >
                   {isGenerating ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" /> Building rubric...
+                      <Loader2 className="w-4 h-4 animate-spin" /> Preparing...
                     </>
                   ) : (
                     <>
-                      <Sparkles className="w-4 h-4" /> Build rubric
+                      <Sparkles className="w-4 h-4" /> Create interview
                     </>
                   )}
                 </button>
@@ -260,53 +260,17 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-400 bg-amber-950/30">
                   {generated.difficulty}
                 </span>
-                <span className="text-[11px] text-slate-500">{generated.scale}</span>
+                {!(generated.type === 'coding' && /constraints/i.test(generated.description)) && (
+                  <span className="text-[11px] text-slate-500">{generated.scale}</span>
+                )}
               </div>
               <h2 className="font-display text-2xl font-medium tracking-tight text-slate-50">{generated.title}</h2>
               <Markdown text={generated.description} className="mt-3 text-sm leading-6 text-slate-300" />
             </div>
 
-            {generated.rubric && (
-              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
-                <h3 className="text-xs font-mono uppercase tracking-wider text-indigo-400 mb-3 flex items-center gap-1.5">
-                  <ListChecks className="w-3.5 h-3.5" /> Grading rubric
-                </h3>
-                <div className="space-y-3">
-                  {generated.rubric.categories.map((c) => (
-                    <div key={c.name}>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-semibold">{c.name}</span>
-                        <span className="text-xs font-mono text-slate-400">{c.weight}%</span>
-                      </div>
-                      <div className="h-1 rounded-full bg-slate-800 mt-1">
-                        <div className="h-1 rounded-full bg-indigo-500" style={{ width: `${c.weight}%` }} />
-                      </div>
-                      <p className="text-xs text-slate-400 mt-1.5">{c.description}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="grid sm:grid-cols-2 gap-4 mt-5 text-xs">
-                  <div>
-                    <h4 className="font-semibold text-emerald-400 mb-1.5">Must cover</h4>
-                    <ul className="space-y-1 text-slate-300 list-disc pl-4">
-                      {generated.rubric.mustCover.map((m) => (
-                        <li key={m}>{m}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <h4 className="font-semibold text-rose-400 mb-1.5 flex items-center gap-1">
-                      <ShieldAlert className="w-3.5 h-3.5" /> Red flags
-                    </h4>
-                    <ul className="space-y-1 text-slate-300 list-disc pl-4">
-                      {generated.rubric.redFlags.map((m) => (
-                        <li key={m}>{m}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            )}
+            <p className="mt-4 text-xs text-slate-500 leading-relaxed">
+              The grading rubric is ready but stays hidden. You will see it with your scorecard when the interview ends.
+            </p>
 
             <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4 flex flex-wrap items-center gap-3">
               {optionsBar}

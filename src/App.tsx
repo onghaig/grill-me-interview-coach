@@ -684,6 +684,7 @@ export default function App() {
           questionTitle={currentQuestion.title}
           durationSeconds={interviewDurationSeconds}
           transcriptCount={transcripts.length}
+          rubric={currentQuestion.rubric}
           onDownloadMarkdown={() => downloadMarkdown(currentRecord())}
           onCopyMarkdown={() => copyMarkdown(currentRecord())}
         />

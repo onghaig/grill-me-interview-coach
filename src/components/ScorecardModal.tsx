@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { ScorecardData } from '../types';
+import { Rubric } from '../../prompts/interviewer';
+import { RubricView } from './RubricView';
 import { Award, CheckCircle2, AlertTriangle, BookOpen, Download, X, Star, BarChart3, Clock, Compass } from 'lucide-react';
 
 interface ScorecardModalProps {
@@ -10,6 +12,7 @@ interface ScorecardModalProps {
   questionTitle: string;
   durationSeconds: number;
   transcriptCount: number;
+  rubric?: Rubric;
   onDownloadMarkdown?: () => void;
   onCopyMarkdown?: () => Promise<boolean>;
 }
@@ -22,6 +25,7 @@ export function ScorecardModal({
   questionTitle,
   durationSeconds,
   transcriptCount,
+  rubric,
   onDownloadMarkdown,
   onCopyMarkdown,
 }: ScorecardModalProps) {
@@ -269,6 +273,16 @@ export function ScorecardModal({
                   </ul>
                 </div>
               </div>
+
+              {rubric && (
+                <section>
+                  <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Grading rubric</h3>
+                  <p className="text-xs text-slate-500 mb-4">
+                    This is what you were graded against. It was hidden during the interview.
+                  </p>
+                  <RubricView rubric={rubric} />
+                </section>
+              )}
             </>
           )}
         </div>

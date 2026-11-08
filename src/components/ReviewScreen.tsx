@@ -4,9 +4,10 @@ import { SavedInterview } from '../utils/history';
 import { downloadMarkdown, copyMarkdown, downloadWhiteboardImage } from '../utils/exportMarkdown';
 import { ScorecardModal } from './ScorecardModal';
 import { ProblemStatement } from './ProblemStatement';
+import { RubricView } from './RubricView';
 import { QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
 
-type Tab = 'scorecard' | 'transcript' | 'code' | 'problem' | 'whiteboard';
+type Tab = 'scorecard' | 'rubric' | 'transcript' | 'code' | 'problem' | 'whiteboard';
 
 interface ReviewScreenProps {
   interview: SavedInterview;
@@ -25,6 +26,7 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
   const sc = interview.scorecard;
   const tabs: { id: Tab; label: string }[] = [
     { id: 'scorecard', label: 'Scorecard' },
+    ...(interview.question.rubric ? [{ id: 'rubric' as Tab, label: 'Rubric' }] : []),
     { id: 'transcript', label: `Transcript (${interview.transcript.length})` },
     { id: 'code', label: 'Code' },
     { id: 'problem', label: 'Problem' },
@@ -165,6 +167,12 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
           </div>
         )}
 
+        {tab === 'rubric' && interview.question.rubric && (
+          <div className="max-w-4xl mx-auto px-6 py-8">
+            <RubricView rubric={interview.question.rubric} />
+          </div>
+        )}
+
         {tab === 'transcript' && (
           <div className="max-w-3xl mx-auto px-6 py-8 space-y-5 select-text">
             {interview.transcript.length === 0 && <p className="text-sm text-slate-500">No transcript was recorded.</p>}
@@ -249,6 +257,7 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
           questionTitle={interview.question.title}
           durationSeconds={interview.durationSeconds}
           transcriptCount={interview.transcript.length}
+          rubric={interview.question.rubric}
           onDownloadMarkdown={() => downloadMarkdown(interview)}
           onCopyMarkdown={() => copyMarkdown(interview)}
         />
