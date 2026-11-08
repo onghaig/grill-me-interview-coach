@@ -25,7 +25,7 @@ import {
 import { registerInterviewRoutes } from "./server/interviews.ts";
 import { registerLibraryRoutes, cleanSvg, cleanCoding, EXTRA_CODING, EXTRA_DESIGN } from "./server/library.ts";
 import { registerLiveSessionRoutes, loadLiveSession } from "./server/liveSessions.ts";
-import { buildResumeTurns, resumeInstruction, ResumeContext } from "./server/resume.ts";
+import { historyBlock, resumeInstruction, ResumeContext } from "./server/resume.ts";
 import { rateLimit } from "./server/limits.ts";
 import { Timing, DEFAULT_TIMING, normalizeTiming, timingPhrase, gradingTimingNote, timerMessage } from "./prompts/timing.ts";
 import { generate, extractJson, LlmConfig, LlmError, Provider, PROVIDERS, PROVIDER_LABEL, MODEL_NAME_RE } from "./server/llm.ts";
@@ -920,11 +920,16 @@ Interviewer Spoken Response:`;
           }
         }
 
-        const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing);
+        // The earlier conversation goes into the standing instructions, not into replayed turns. Replayed text turns
+        // from the "model" side make the voice model carry on in text, which the browser then reads in a robotic voice.
+        const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing) + (resume ? historyBlock(resume) : "");
+
+        // Text-only interviews never open the voice connection
+        const textOnly = msg.voiceAgent === false;
 
         // Try connecting via Gemini Live API first
         let liveConnected = false;
-        {
+        if (!textOnly) {
           // Attempt Live API connection
           // The user may pick the live model; it is tried first, then the others as fallbacks
           const LIVE_MODELS = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
@@ -949,12 +954,9 @@ Interviewer Spoken Response:`;
                   systemInstruction,
                   inputAudioTranscription: {},
                   outputAudioTranscription: {},
-                  realtimeInputConfig: pushToTalk
-                    ? {
-                        // Push-to-talk: the client marks the start/end of each turn explicitly.
-                        automaticActivityDetection: { disabled: true },
-                      }
-                    : {
+                  // Push-to-talk is handled by the client (it only sends audio while the key is held), so the user can
+                  // switch between push-to-talk and hands-free at any moment without reconnecting.
+                  realtimeInputConfig: {
                         automaticActivityDetection: {
                           // Less eager to decide that background noise or echo is the candidate talking, which is
                           // what makes the interviewer stop mid-sentence. The padding keeps the first syllable.
@@ -963,7 +965,7 @@ Interviewer Spoken Response:`;
                           endOfSpeechSensitivity: "END_SENSITIVITY_LOW" as any,
                           silenceDurationMs: 1400,
                         },
-                      },
+                  },
                 },
                 callbacks: {
                   onopen: () => {
@@ -1064,7 +1066,10 @@ Interviewer Spoken Response:`;
           sessionMode = "live_socket";
           if (resume) {
             // Give the new voice session the earlier conversation as text, then ask it to welcome the candidate back
-            liveSession.sendClientContent({ turns: buildResumeTurns(resume).turns, turnComplete: true });
+            liveSession.sendClientContent({
+              turns: [{ role: "user", parts: [{ text: resumeInstruction(resume, resume.transcript.length > 0 && resume.transcript[resume.transcript.length - 1].role === "user") }] }],
+              turnComplete: true,
+            });
           } else if (msg.kickoff !== false) {
             liveSession.sendClientContent({
               turns: [
@@ -1113,16 +1118,31 @@ Interviewer Spoken Response:`;
         }
       } else if (msg.type === "audio_end") {
         // The client stopped sending audio because the mic went quiet; flush anything the model has buffered
-        if (liveSession && sessionMode === "live_socket" && isConnected && !pushToTalk) {
+        if (liveSession && sessionMode === "live_socket" && isConnected) {
           liveSession.sendRealtimeInput({ audioStreamEnd: true });
         }
       } else if (msg.type === "ptt_start") {
-        if (liveSession && sessionMode === "live_socket" && isConnected && pushToTalk) {
-          liveSession.sendRealtimeInput({ activityStart: {} });
-        }
+        // Nothing to tell the model: it hears the audio the client starts sending
       } else if (msg.type === "ptt_end") {
-        if (liveSession && sessionMode === "live_socket" && isConnected && pushToTalk) {
-          liveSession.sendRealtimeInput({ activityEnd: {} });
+        if (liveSession && sessionMode === "live_socket" && isConnected) {
+          liveSession.sendRealtimeInput({ audioStreamEnd: true });
+        }
+      } else if (msg.type === "switch_mode") {
+        // Drop the voice connection and carry on as a text chat, from the history the browser sends
+        if (msg.mode === "text" && sessionMode === "live_socket" && isConnected) {
+          const hist = Array.isArray(msg.history) ? msg.history.slice(-24) : [];
+          sessionGen++; // our own close is not an unexpected drop
+          try {
+            await liveSession?.close();
+          } catch {}
+          liveSession = null;
+          sessionMode = "conversational_engine";
+          conversationHistory = hist
+            .map((t: any) => ({ role: t?.role === "user" ? ("user" as const) : ("model" as const), text: String(t?.text || "").slice(0, 1200) }))
+            .filter((t: any) => t.text);
+          if (latestCodeContext) conversationHistory.push({ role: "note", text: `[CODE UPDATE]\n${latestCodeContext}` });
+          if (latestDiagramContext) conversationHistory.push({ role: "note", text: `[DIAGRAM UPDATE]\n${latestDiagramContext}` });
+          sendJson({ type: "status", status: "connected", mode: "conversational_engine", message: "Switched to text chat" });
         }
       } else if (msg.type === "code") {
         latestCodeContext = String(msg.text || "").slice(0, 12000);

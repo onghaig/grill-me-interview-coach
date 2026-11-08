@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MicGate } from './micGate.ts';
+import { MicGate, gateOptionsForSensitivity } from './micGate.ts';
 
 // Chunks arrive roughly every 85 ms
 const run = (gate: MicGate<number>, levels: number[], speaking: boolean, startMs = 0) => {
@@ -85,4 +85,26 @@ test('the first moments of echo are not trusted before the level is learned', ()
   const g = new MicGate<number>();
   const { sent } = run(g, Array(6).fill(25), true);
   assert.equal(sent.length, 0);
+});
+
+test('the sensitivity slider moves the bar, and 50 matches the defaults', () => {
+  assert.equal(gateOptionsForSensitivity(50).quietThreshold!, 8);
+  assert.equal(gateOptionsForSensitivity(50).speakingFloor!, 28);
+  assert.ok(gateOptionsForSensitivity(0).quietThreshold! > gateOptionsForSensitivity(100).quietThreshold!);
+  const g = new MicGate<number>(gateOptionsForSensitivity(10));
+  assert.equal(run(g, Array(20).fill(10), false).sent.length, 0, 'low sensitivity ignores quiet speech');
+  g.setOptions(gateOptionsForSensitivity(90));
+  assert.ok(run(g, Array(20).fill(10), false, 5000).sent.length > 0, 'raising it takes effect immediately');
+});
+
+test('a single loud blip such as a cough does not open the gate', () => {
+  const g = new MicGate<number>();
+  assert.equal(run(g, [...Array(10).fill(1), 40, ...Array(20).fill(1)], false).sent.length, 0);
+});
+
+test('steady background chatter raises the bar, but clear louder speech still gets through', () => {
+  const g = new MicGate<number>();
+  run(g, Array(200).fill(7), false); // background voices just under the bar, for 17 s
+  assert.equal(run(g, Array(10).fill(9), false, 20000).sent.length, 0, 'a bit above the old bar is now treated as background');
+  assert.ok(run(g, Array(10).fill(40), false, 30000).sent.length > 0, 'the candidate speaking up is heard');
 });

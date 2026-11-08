@@ -36,6 +36,22 @@ export function resumeInstruction(ctx: ResumeContext, unanswered: boolean): stri
   );
 }
 
+/** The conversation so far, written into the interviewer's standing instructions when someone rejoins. */
+export function historyBlock(ctx: ResumeContext): string {
+  const lines = ctx.transcript
+    .slice(-MAX_TURNS)
+    .map((t) => ({ who: t.role === "user" ? "Candidate" : "Interviewer", text: String(t.text || "").trim().slice(0, MAX_CHARS) }))
+    .filter((t) => t.text)
+    .map((t) => `${t.who}: ${t.text}`);
+  const parts = [
+    "\n\n## The interview so far (you are resuming it)\nThis is what was said before the candidate left. It is background: continue speaking aloud, in your own voice.",
+    lines.join("\n"),
+  ];
+  if (ctx.code.trim()) parts.push(`Latest code (${ctx.codeLanguage}):\n${ctx.code.slice(0, 12_000)}`);
+  if (ctx.diagramText.trim()) parts.push(`Latest whiteboard:\n${ctx.diagramText.slice(0, 8000)}`);
+  return parts.join("\n\n");
+}
+
 /**
  * Rebuilds the conversation for a new live session as plain text turns: recent transcript, the latest code and
  * whiteboard, and a final instruction to welcome the candidate back. Text is far cheaper than replaying audio.

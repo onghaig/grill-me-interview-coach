@@ -13,7 +13,7 @@ import { api, getApiKey, isConfigured, llmForSocket, voiceModelForSocket } from 
 import { AuthScreen, AccountUser } from './components/AuthScreen';
 import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
-import { MicGate } from './utils/micGate';
+import { MicGate, gateOptionsForSensitivity } from './utils/micGate';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
 import { Timing, DEFAULT_TIMING, timeLimitSeconds, normalizeTiming } from '../prompts/timing';
@@ -63,6 +63,30 @@ export default function App() {
   const captureWhiteboardRef = useRef<(() => Promise<string | null>) | null>(null);
   const whiteboardImageRef = useRef<string | undefined>(undefined);
   const [voice, setVoice] = useState('Sulafat');
+  // A text chat has no voice connection (cheaper). Read-aloud uses the browser's own voice for the interviewer's replies.
+  const [voiceAgent, setVoiceAgent] = useState(true);
+  const voiceAgentRef = useRef(true);
+  voiceAgentRef.current = voiceAgent;
+  const [readAloud, setReadAloud] = useState(false);
+  const readAloudRef = useRef(false);
+  readAloudRef.current = readAloud;
+  const [micSensitivity, setMicSensitivity] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('br-mic-sensitivity'));
+      return localStorage.getItem('br-mic-sensitivity') !== null && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 50;
+    } catch {
+      return 50;
+    }
+  });
+  const gateRef = useRef<MicGate<string> | null>(null);
+  useEffect(() => {
+    gateRef.current?.setOptions(gateOptionsForSensitivity(micSensitivity));
+    try {
+      localStorage.setItem('br-mic-sensitivity', String(micSensitivity));
+    } catch {
+      /* the setting just will not be remembered */
+    }
+  }, [micSensitivity]);
   const [workspaceTab, setWorkspaceTab] = useState<'problem' | 'whiteboard' | 'code'>('whiteboard');
   const [code, setCode] = useState('');
   const [codeLanguage, setCodeLanguage] = useState('Python');
@@ -221,7 +245,7 @@ export default function App() {
       setWorkspaceTab(d.question.type === 'coding' ? 'code' : 'whiteboard');
       setView('interview');
       if (startNow) {
-        startSession(d.question, { pushToTalk: isPushToTalk, voice: savedVoice, timing: savedTiming }, {
+        startSession(d.question, { pushToTalk: isPushToTalk, voice: savedVoice, timing: savedTiming, voiceAgent: voiceAgentRef.current }, {
           hasProgress: d.transcript.length > 0,
           fromServer: true,
           elapsed: d.elapsedSeconds,
@@ -497,13 +521,50 @@ export default function App() {
     openEntryRef.current = null;
   };
 
-  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice, timing });
+  /** Switch push-to-talk on or off at any point in the interview. */
+  const handleTogglePtt = (enabled: boolean) => {
+    isPushToTalkRef.current = enabled;
+    setIsPushToTalk(enabled);
+    if (!enabled) {
+      // Going hands-free: end any held turn so nothing is left half open
+      if (pttReleaseTimerRef.current) {
+        clearTimeout(pttReleaseTimerRef.current);
+        pttReleaseTimerRef.current = null;
+      }
+      if (pttSendingRef.current && wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'ptt_end' }));
+      pttSendingRef.current = false;
+      setIsSpacePressed(false);
+    }
+  };
+
+  /** Drop the voice connection and carry on by typing. The server keeps the conversation going as text. */
+  const handleSwitchToText = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const history = stateRef.current.transcripts.slice(-24).map((t: TranscriptEntry) => ({ role: t.role, text: t.text }));
+    ws.send(JSON.stringify({ type: 'switch_mode', mode: 'text', history }));
+    audioRecorderRef.current?.stop();
+    audioRecorderRef.current = null;
+    audioPlayerRef.current?.stop();
+    pttSendingRef.current = false;
+    setIsSpacePressed(false);
+    setIsInterviewerSpeaking(false);
+    sessionModeRef.current = 'conversational_engine';
+    setVoiceAgent(false);
+    voiceAgentRef.current = false;
+    setHasMicrophone(false);
+    showNotice('Switched to text chat. The interviewer will reply in writing.');
+  };
+
+  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice, timing, voiceAgent });
 
   const handleHomeStart = (question: SystemDesignQuestion, options: StartOptions) => {
     setCurrentQuestion(question);
     setIsPushToTalk(options.pushToTalk);
     isPushToTalkRef.current = options.pushToTalk;
     setVoice(options.voice);
+    setVoiceAgent(options.voiceAgent);
+    voiceAgentRef.current = options.voiceAgent;
     setTiming(options.timing);
     setTranscripts([]);
     setLatestDiagramText('');
@@ -565,6 +626,7 @@ export default function App() {
             llm: llmForSocket(),
             liveModel: voiceModelForSocket(),
             pushToTalk: options.pushToTalk,
+            voiceAgent: options.voiceAgent,
             timing: options.timing,
             resumeSessionId: resuming ? sessionIdRef.current : undefined,
             kickoff: true,
@@ -602,7 +664,7 @@ export default function App() {
             appendStreamed('interviewer', msg.text);
           } else if (msg.type === 'turn_complete') {
             // Only the text-only fallback engine needs browser speech; live mode streams real audio
-            if (sessionModeRef.current === 'conversational_engine' && openEntryRef.current?.role === 'interviewer') {
+            if (sessionModeRef.current === 'conversational_engine' && readAloudRef.current && openEntryRef.current?.role === 'interviewer') {
               audioPlayerRef.current?.speakText(openTextRef.current, true);
             }
             // Rarely the model answers in text only. Speak it so the candidate is never left in silence.
@@ -664,7 +726,8 @@ export default function App() {
       // In hands-free mode the MicGate sends audio only while someone is speaking (silence costs tokens), and
       // ignores the interviewer's own voice coming back through the speakers, which the model would otherwise
       // take as the candidate interrupting. Push-to-talk already sends only what you hold the key for.
-      const gate = new MicGate<string>();
+      const gate = new MicGate<string>(gateOptionsForSensitivity(micSensitivity));
+      gateRef.current = gate;
       let latestVolume = 0;
       const sendAudio = (data: string) => wsRef.current?.send(JSON.stringify({ type: 'audio', data }));
 
@@ -672,7 +735,8 @@ export default function App() {
         (base64Pcm) => {
           const ws = wsRef.current;
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          if (options.pushToTalk) {
+          // Read live, so push-to-talk can be switched on or off in the middle of the interview
+          if (isPushToTalkRef.current) {
             if (pttSendingRef.current) sendAudio(base64Pcm);
             return;
           }
@@ -687,9 +751,13 @@ export default function App() {
         }
       );
 
-      const micStarted = await recorder.start();
-      setHasMicrophone(micStarted);
-      audioRecorderRef.current = recorder;
+      if (options.voiceAgent) {
+        const micStarted = await recorder.start();
+        setHasMicrophone(micStarted);
+        audioRecorderRef.current = recorder;
+      } else {
+        setHasMicrophone(false);
+      }
     } catch (err: any) {
       console.error('Failed to start interview:', err);
       setConnecting(false);
@@ -1092,7 +1160,16 @@ export default function App() {
           interimTranscript={null}
           isInterviewerSpeaking={isInterviewerSpeaking}
           isPushToTalk={isPushToTalk}
-          onTogglePushToTalk={setIsPushToTalk}
+          onTogglePushToTalk={handleTogglePtt}
+          voiceAgent={voiceAgent}
+          onSwitchToText={handleSwitchToText}
+          readAloud={readAloud}
+          onToggleReadAloud={(on) => {
+            setReadAloud(on);
+            if (!on) audioPlayerRef.current?.stop();
+          }}
+          micSensitivity={micSensitivity}
+          onMicSensitivity={setMicSensitivity}
           isSpacePressed={isSpacePressed}
           micVolume={micVolume}
           hasMicrophone={hasMicrophone}

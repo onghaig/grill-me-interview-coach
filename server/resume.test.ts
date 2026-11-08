@@ -82,3 +82,14 @@ test('time information follows the timing mode', () => {
 test('a short break is not mentioned', () => {
   assert.doesNotMatch(resumeInstruction({ ...base, minutesAway: 1 }, false), /away/);
 });
+
+test('historyBlock puts the earlier conversation, code and board into the instructions', async () => {
+  const { historyBlock } = await import('./resume.ts');
+  const block = historyBlock({
+    transcript: [{ role: 'interviewer', text: 'Welcome' }, { role: 'user', text: 'Hi there' }],
+    code: 'x = 1', codeLanguage: 'Python', diagramText: 'A->B', elapsedSeconds: 60, timing: { mode: 'normal' } as any, minutesAway: 3,
+  });
+  assert.match(block, /Interviewer: Welcome\nCandidate: Hi there/);
+  assert.match(block, /x = 1/);
+  assert.match(block, /A->B/);
+});

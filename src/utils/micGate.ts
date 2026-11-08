@@ -20,6 +20,24 @@ export interface MicGateOptions {
   learnMs: number;
   /** While the interviewer talks, keep the gate open only this long after the last loud chunk. */
   speakingHangoverMs: number;
+  /** Speech must stay loud for this many chunks in a row before the gate opens, so a cough or a passing voice is ignored. */
+  onsetChunks: number;
+  /** In a room with steady background talk the bar rises to this multiple of the background level, plus the margin. */
+  ambientMultiplier: number;
+  ambientMargin: number;
+}
+
+/**
+ * Maps the 0-100 sensitivity slider to gate settings. Higher means the mic picks up quieter speech
+ * (and more background); lower means you have to speak up, which keeps other voices out.
+ * 50 is the default.
+ */
+export function gateOptionsForSensitivity(sensitivity: number): Partial<MicGateOptions> {
+  const s = Math.max(0, Math.min(100, Number.isFinite(sensitivity) ? sensitivity : 50));
+  return {
+    quietThreshold: Math.round(14 - 0.12 * s),
+    speakingFloor: Math.round(43 - 0.3 * s),
+  };
 }
 
 export const DEFAULT_GATE: MicGateOptions = {
@@ -27,10 +45,13 @@ export const DEFAULT_GATE: MicGateOptions = {
   speakingFloor: 28,
   echoMultiplier: 2,
   echoMargin: 8,
-  prerollMs: 450,
+  prerollMs: 900,
   hangoverMs: 2000,
   learnMs: 500,
   speakingHangoverMs: 250,
+  onsetChunks: 2,
+  ambientMultiplier: 2.2,
+  ambientMargin: 2,
 };
 
 export class MicGate<T> {
@@ -38,6 +59,8 @@ export class MicGate<T> {
   private lastLoudAt = -Infinity;
   private streaming = false;
   private echoLevel = 0;
+  private ambient = 0;
+  private loudRun = 0;
   private wasSpeaking = false;
   private speakingSince = 0;
   private preroll: { at: number; chunk: T }[] = [];
@@ -46,10 +69,17 @@ export class MicGate<T> {
     this.opts = { ...DEFAULT_GATE, ...opts };
   }
 
+  /** Change settings while running, for example when the sensitivity slider moves. */
+  setOptions(opts: Partial<MicGateOptions>) {
+    this.opts = { ...this.opts, ...opts };
+  }
+
   /** The level a chunk must reach to count as speech right now. */
   threshold(interviewerSpeaking: boolean): number {
     const o = this.opts;
-    return interviewerSpeaking ? Math.max(o.speakingFloor, this.echoLevel * o.echoMultiplier + o.echoMargin) : o.quietThreshold;
+    if (interviewerSpeaking) return Math.max(o.speakingFloor, this.echoLevel * o.echoMultiplier + o.echoMargin);
+    // Steady background voices raise the bar, within a limit so a noisy room can never lock the candidate out
+    return Math.max(o.quietThreshold, Math.min(45, this.ambient * o.ambientMultiplier + o.ambientMargin));
   }
 
   /**
@@ -65,9 +95,15 @@ export class MicGate<T> {
     // Learn quickly at the start of the interviewer's speech and trust nothing until it is measured.
     if (!this.streaming) {
       if (interviewerSpeaking) this.echoLevel += (volume - this.echoLevel) * (learning ? 0.4 : 0.05);
-      else this.echoLevel *= 0.9;
+      else {
+        this.echoLevel *= 0.9;
+        // Track the background level: slowly up, faster down
+        this.ambient += (volume - this.ambient) * (volume > this.ambient ? 0.02 : 0.1);
+      }
     }
-    if (!learning && volume >= this.threshold(interviewerSpeaking)) this.lastLoudAt = now;
+    const loud = !learning && volume >= this.threshold(interviewerSpeaking);
+    this.loudRun = loud ? this.loudRun + 1 : 0;
+    if (loud && (this.streaming || this.loudRun >= this.opts.onsetChunks)) this.lastLoudAt = now;
 
     // The tail after the candidate's speech is long, but not while the interviewer is replying: it would
     // carry the start of the reply's echo straight back to the model.

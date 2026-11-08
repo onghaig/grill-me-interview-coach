@@ -24,6 +24,8 @@ export interface StartOptions {
   pushToTalk: boolean;
   voice: string;
   timing: Timing;
+  /** False for a text chat: no voice connection, which also uses far fewer tokens. */
+  voiceAgent: boolean;
 }
 
 interface HomeScreenProps {
@@ -67,6 +69,7 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
   const [error, setError] = useState<string | null>(null);
   const [generated, setGenerated] = useState<SystemDesignQuestion | null>(null);
   const [pushToTalk, setPushToTalk] = useState(false);
+  const [voiceAgent, setVoiceAgent] = useState(true);
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
   const [voice, setVoice] = useState(VOICES[0].id);
   // The last timing choice is remembered between visits
@@ -170,7 +173,7 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
     }
   };
 
-  const options: StartOptions = { pushToTalk, voice, timing };
+  const options: StartOptions = { pushToTalk, voice, timing, voiceAgent };
 
   const optionsBar = (
     <div className="flex flex-wrap items-center gap-3">
@@ -190,6 +193,18 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
                 </select>
               </label>
               <label className="text-xs text-slate-400 flex items-center gap-2">
+                Interviewer
+                <select
+                  value={voiceAgent ? 'voice' : 'text'}
+                  onChange={(e) => setVoiceAgent(e.target.value === 'voice')}
+                  className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
+                >
+                  <option value="voice">Voice conversation</option>
+                  <option value="text">Text chat (uses fewer tokens)</option>
+                </select>
+              </label>
+              {voiceAgent && (
+              <label className="text-xs text-slate-400 flex items-center gap-2">
                 Voice
                 <select
                   value={voice}
@@ -203,6 +218,8 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
                   ))}
                 </select>
               </label>
+              )}
+              {voiceAgent && (
               <button
                 onClick={() => setPushToTalk(!pushToTalk)}
                 className={`py-1.5 px-3 rounded-md border text-xs font-semibold flex items-center gap-1.5 transition ${
@@ -214,6 +231,7 @@ export function HomeScreen({ onStart, history, liveSessions, onResumeSession, on
                 {pushToTalk ? <Radio className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
                 {pushToTalk ? 'Push-to-talk (hold Space)' : 'Hands-free'}
               </button>
+              )}
     </div>
   );
 

@@ -55,6 +55,16 @@ interface InterviewPanelProps {
   onPttRelease: () => void;
   onGoHome: () => void;
   getAudioLevel: () => number;
+  /** False for a text chat with the interviewer: no microphone, no streamed voice. */
+  voiceAgent: boolean;
+  /** Drop the voice connection mid-interview and carry on by typing. */
+  onSwitchToText: () => void;
+  /** Text chat only: read the interviewer's replies aloud with the browser's voice. */
+  readAloud: boolean;
+  onToggleReadAloud: (on: boolean) => void;
+  /** 0-100. Higher picks up quieter speech; lower keeps background voices out. */
+  micSensitivity: number;
+  onMicSensitivity: (value: number) => void;
 }
 
 export function InterviewPanel({
@@ -86,7 +96,37 @@ export function InterviewPanel({
   onPttRelease,
   onGoHome,
   getAudioLevel,
+  voiceAgent,
+  onSwitchToText,
+  readAloud,
+  onToggleReadAloud,
+  micSensitivity,
+  onMicSensitivity,
 }: InterviewPanelProps) {
+  const [dictating, setDictating] = useState(false);
+  const recognitionRef = useRef<any>(null);
+  const SpeechRec = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
+  const toggleDictation = () => {
+    if (dictating) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    if (!SpeechRec) return;
+    const rec = new SpeechRec();
+    rec.lang = 'en-US';
+    rec.interimResults = false;
+    rec.continuous = true;
+    rec.onresult = (ev: any) => {
+      const said = Array.from(ev.results).slice(ev.resultIndex).map((r: any) => r[0].transcript).join(' ').trim();
+      if (said) setCandidateInput((prev) => (prev ? prev + ' ' : '') + said);
+    };
+    rec.onend = () => setDictating(false);
+    rec.onerror = () => setDictating(false);
+    recognitionRef.current = rec;
+    setDictating(true);
+    rec.start();
+  };
+  useEffect(() => () => recognitionRef.current?.stop(), []);
   const [showQuestionSelector, setShowQuestionSelector] = useState(false);
   const [showQuestionDetails, setShowQuestionDetails] = useState(false);
   const [copiedTranscript, setCopiedTranscript] = useState(false);
@@ -375,7 +415,7 @@ export function InterviewPanel({
         {/* Candidate Turn Input Bar */}
         {isInterviewActive && (
           <div className="p-2.5 bg-slate-900/90 border-t border-slate-800 flex flex-col gap-1.5">
-            {!hasMicrophone && (
+            {voiceAgent && !hasMicrophone && (
               <div className="text-[10px] text-amber-400/90 flex items-center gap-1 font-medium">
                 <span>Voice Output is active (Interviewer will speak aloud). Type your answers or hold Space:</span>
               </div>
@@ -393,9 +433,20 @@ export function InterviewPanel({
                 type="text"
                 value={candidateInput}
                 onChange={(e) => setCandidateInput(e.target.value)}
-                placeholder="Speak into mic, hold Space, or type answer..."
+                placeholder={voiceAgent ? "Speak into mic, hold Space, or type answer..." : "Type your answer..."}
                 className="flex-1 bg-slate-950 border border-slate-800 rounded-md px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
               />
+              {!voiceAgent && SpeechRec && (
+                <button
+                  type="button"
+                  onClick={toggleDictation}
+                  className={`px-2 py-1.5 rounded-md border text-xs ${dictating ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-300' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                  title={dictating ? 'Stop dictating' : 'Dictate your answer with your microphone'}
+                  aria-pressed={dictating}
+                >
+                  {dictating ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={!candidateInput.trim()}
@@ -441,28 +492,51 @@ export function InterviewPanel({
           )}
 
           {/* Push-to-talk toggle switch */}
+          {voiceAgent && (
           <button
             onClick={() => onTogglePushToTalk(!isPushToTalk)}
-            disabled={isInterviewActive || isConnecting}
+            disabled={isConnecting}
             className={`disabled:opacity-60 disabled:cursor-not-allowed py-2 px-3 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition ${
               isPushToTalk
                 ? 'border-indigo-500/50 bg-indigo-950/40 text-indigo-300'
                 : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
             }`}
             title={
-              isInterviewActive
-                ? 'Talk mode is fixed during an interview'
-                : isPushToTalk
-                ? 'Push-to-Talk Mode enabled (Hold Space to speak)'
-                : 'Automatic Voice Activity Detection enabled'
+              isPushToTalk
+                ? 'Push-to-talk is on (hold Space to speak). Click to go hands-free.'
+                : 'Hands-free is on. Click for push-to-talk, which keeps background voices out.'
             }
           >
             <Radio className="w-3.5 h-3.5" />
-            <span>{isPushToTalk ? 'PTT (Space)' : 'Auto VAD'}</span>
+            <span>{isPushToTalk ? 'PTT (Space)' : 'Hands-free'}</span>
           </button>
+          )}
+          {voiceAgent && isInterviewActive && (
+            <button
+              onClick={onSwitchToText}
+              className="py-2 px-3 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200 text-xs font-semibold"
+              title="Stop the voice connection and carry on by typing. This also uses fewer tokens."
+            >
+              Switch to text
+            </button>
+          )}
+          {!voiceAgent && (
+            <button
+              onClick={() => onToggleReadAloud(!readAloud)}
+              aria-pressed={readAloud}
+              className={`py-2 px-3 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition ${
+                readAloud ? 'border-indigo-500/50 bg-indigo-950/40 text-indigo-300' : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+              }`}
+              title="Read the interviewer's replies aloud with your browser's voice"
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              <span>{readAloud ? 'Reading aloud' : 'Read aloud'}</span>
+            </button>
+          )}
         </div>
 
         {/* Mic Status & Visualizer Banner */}
+        {voiceAgent && (<>
         <div
           className={`p-2 rounded-lg border flex items-center justify-between text-xs transition-colors ${micStatusColor}`}
         >
@@ -502,8 +576,25 @@ export function InterviewPanel({
           )}
         </div>
 
+        <label className="flex items-center gap-2 text-[11px] text-slate-400" title="Higher picks up quieter speech. Lower keeps background voices and noise out.">
+          <span className="shrink-0 w-24">Mic sensitivity</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={micSensitivity}
+            onChange={(e) => onMicSensitivity(Number(e.target.value))}
+            disabled={isPushToTalk}
+            className="flex-1 accent-indigo-500 disabled:opacity-40"
+            aria-label="Mic sensitivity"
+          />
+          <span className="w-16 text-right text-slate-500">{isPushToTalk ? 'PTT' : micSensitivity < 35 ? 'Low' : micSensitivity > 65 ? 'High' : 'Medium'}</span>
+        </label>
+        </>)}
+
         {/* Push-to-talk hold button (mouse, touch or Space) */}
-        {isInterviewActive && isPushToTalk && (
+        {voiceAgent && isInterviewActive && isPushToTalk && (
           <button
             onPointerDown={(e) => {
               e.preventDefault();
