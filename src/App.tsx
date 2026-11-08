@@ -220,15 +220,18 @@ export default function App() {
   const nowStamp = () =>
     new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+  // Safety net: instruction tags such as [COACH] or [DIAGRAM UPDATE] must never appear in the chat
+  const stripTags = (t: string) => t.replace(/\[(?:COACH|DIAGRAM UPDATE|CODE UPDATE|PHASE[^\]]*|START OF INTERVIEW)[^\]]*\]:?/gi, '');
+
   // Merge streamed transcription chunks into a single message per turn
   const appendStreamed = (role: 'user' | 'interviewer', chunk: string) => {
     const open = openEntryRef.current;
     if (open && open.role === role) {
       openTextRef.current += chunk;
-      setTranscripts((prev) => prev.map((t) => (t.id === open.id ? { ...t, text: t.text + chunk } : t)));
+      setTranscripts((prev) => prev.map((t) => (t.id === open.id ? { ...t, text: stripTags(t.text + chunk) } : t)));
       return;
     }
-    const text = chunk.replace(/^\s+/, '');
+    const text = stripTags(chunk).replace(/^\s+/, '');
     if (!text) return;
     const id = `${role}_${Date.now()}_${Math.random()}`;
     openEntryRef.current = { role, id };

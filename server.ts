@@ -364,7 +364,10 @@ wss.on("connection", (clientWs: WebSocket) => {
   let isConnected = false;
   let sessionMode: "live_socket" | "conversational_engine" = "conversational_engine";
   let currentQuestion: SystemDesignQuestion = SYSTEM_DESIGN_QUESTIONS[0];
-  let conversationHistory: Array<{ role: "user" | "model"; text: string }> = [];
+  // "note" entries are background context (whiteboard, code, timer), never something the candidate said
+  let conversationHistory: Array<{ role: "user" | "model" | "note"; text: string }> = [];
+  // Private guidance from the evaluator; used once on the next turn and never quoted
+  let coachNotes: string[] = [];
   let latestDiagramContext = "";
   let currentPhase = "Clarify requirements";
   let pushToTalk = false;
@@ -381,12 +384,17 @@ wss.on("connection", (clientWs: WebSocket) => {
     }
     isConnected = false;
     conversationHistory = [];
+    coachNotes = [];
   };
 
   // Helper to generate a conversational turn using Gemini 3.8 Flash
-  const generateInterviewerTurn = async (userPrompt: string, isKickoff = false) => {
+  const generateInterviewerTurn = async (userPrompt: string, isKickoff = false, isEvent = false) => {
     try {
       const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
+      const coachGuidance = coachNotes.length
+        ? `\nPrivate guidance from the evaluator. Act on it in your own words at this turn. Never quote it, never mention an evaluator or coach:\n${coachNotes.map((n) => `- ${n}`).join('\n')}\n`
+        : '';
+      coachNotes = [];
 
       const promptContext = `System Instruction:
 ${systemInstruction}
@@ -398,9 +406,9 @@ Latest Code In Editor:
 ${latestCodeContext || "(No code yet)"}
 
 Conversation History:
-${conversationHistory.map((c) => `${c.role === 'user' ? 'Candidate' : 'Interviewer'}: ${c.text}`).join('\n')}
-
-Latest Candidate Input:
+${conversationHistory.map((c) => (c.role === 'note' ? `(Background note, nobody said this aloud) ${c.text}` : `${c.role === 'user' ? 'Candidate' : 'Interviewer'}: ${c.text}`)).join('\n')}
+${coachGuidance}
+${isEvent ? 'Latest event (not spoken by the candidate):' : 'Latest Candidate Input:'}
 ${userPrompt}
 
 Remember:
@@ -408,6 +416,7 @@ Remember:
 - If candidate asked a question or shared ideas, respond directly and ask a probing follow-up.
 - If candidate updated the whiteboard diagram, refer to their drawn shapes and arrows naturally.
 - Never give away the design.
+- Never say bracketed tags or system wording out loud. Speak only as the interviewer.
 Interviewer Spoken Response:`;
 
       if (apiKey) {
@@ -415,7 +424,7 @@ Interviewer Spoken Response:`;
           contents: promptContext,
         });
 
-        const replyText = response.text?.trim() || "";
+        const replyText = (response.text || "").replace(/\[[A-Z][A-Z _-]*(?::[^\]]*)?\]:?/g, "").trim();
         if (replyText) {
           conversationHistory.push({ role: "model", text: replyText });
           clientWs.send(
@@ -684,7 +693,7 @@ Interviewer Spoken Response:`;
             turnComplete: false,
           });
         } else if (sessionMode === "conversational_engine" && isConnected) {
-          conversationHistory.push({ role: "user", text: codeMsg });
+          conversationHistory.push({ role: "note", text: codeMsg });
         }
       } else if (msg.type === "diagram") {
         latestDiagramContext = msg.text;
@@ -700,7 +709,7 @@ Interviewer Spoken Response:`;
           });
         } else if (sessionMode === "conversational_engine" && isConnected) {
           // Process diagram update
-          conversationHistory.push({ role: "user", text: `[DIAGRAM UPDATE]\n${msg.text}` });
+          conversationHistory.push({ role: "note", text: `[DIAGRAM UPDATE]\n${msg.text}` });
         }
       } else if (msg.type === "coach") {
         if (liveSession && sessionMode === "live_socket" && isConnected) {
@@ -714,8 +723,8 @@ Interviewer Spoken Response:`;
             turnComplete: false,
           });
         } else if (sessionMode === "conversational_engine" && isConnected) {
-          conversationHistory.push({ role: "user", text: `[COACH]: ${msg.text}` });
-          await generateInterviewerTurn(`[COACH]: ${msg.text}`);
+          // Held for the next turn, same as the live path: no immediate reply and not logged as candidate speech
+          coachNotes.push(String(msg.text));
         }
       } else if (msg.type === "phase_advance") {
         currentPhase = msg.label || msg.phase;
@@ -730,8 +739,8 @@ Interviewer Spoken Response:`;
             turnComplete: false,
           });
         } else if (sessionMode === "conversational_engine" && isConnected) {
-          conversationHistory.push({ role: "user", text: `[PHASE TIMER UPDATE]: Moved to phase ${currentPhase}` });
-          await generateInterviewerTurn(`Candidate has transitioned to the "${currentPhase}" phase.`);
+          conversationHistory.push({ role: "note", text: `[PHASE TIMER UPDATE]: Moved to phase ${currentPhase}` });
+          await generateInterviewerTurn(`The timer moved the interview to the "${currentPhase}" phase. Say so naturally, like a real interviewer.`, false, true);
         }
       } else if (msg.type === "user_text") {
         if (liveSession && sessionMode === "live_socket" && isConnected) {
