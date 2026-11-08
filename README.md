@@ -10,7 +10,9 @@ Practice system design, low-level design, LeetCode-style and behavioral intervie
 ## How it works for users
 
 - Sign up with an email and password. Interviews are stored per account in MongoDB.
-- Bring your own Gemini API key (free from https://aistudio.google.com/apikey). It is stored only in the browser, sent with each request, and never stored or logged on the server.
+- Bring your own API keys. Keys are stored only in the browser, sent with each request, and never stored or logged on the server.
+  - The live voice interview always runs on Gemini, so a Gemini key is required (free from https://aistudio.google.com/apikey).
+  - Question writing, rubrics, resume planning and grading can run on Gemini, OpenAI or Anthropic. Choose under Models and keys; optionally name a model (defaults: `gpt-4.1` for OpenAI, `claude-opus-5-5` for Anthropic).
 - One live interview at a time per account. Starting a second one (another tab or device) is refused until the first ends.
 - Limits: resume text 15,000 characters, resume PDF 3 MB, text file 200 KB, principles 6,000 characters.
 
@@ -39,6 +41,17 @@ npm run lint              # typecheck
 4. Generate a public domain for the service. HTTPS is required (session cookies are `Secure` in production).
 
 That is all the configuration there is. No Gemini key is set on the server.
+
+## Token efficiency
+
+The live voice model re-reads the whole conversation on every turn, so most of the cost comes from what accumulates in that conversation.
+
+- Hands-free mode sends audio only while someone is speaking (with a short pre-roll and a 2 second tail so turn-taking still works), instead of streaming silence.
+- Whiteboard and code snapshots are skipped when unchanged and sent at most once every 12 seconds per kind (the newest always goes out).
+- Very long interviews use the Live API's sliding-window context compression, with thresholds high enough that a normal 30 minute interview is not trimmed.
+- The interviewer's standing instructions carry only what it needs to steer (rubric category names, must-cover topics and red flags, not the full rubric).
+- Grading sends a compact transcript (no timestamps), leaves out empty whiteboard and code sections, and asks for concise, evidence-based feedback.
+- Generated rubrics and interview plans are capped (2 to 3 signals per category, short notes).
 
 ## Scaling notes
 

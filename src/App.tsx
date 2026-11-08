@@ -9,7 +9,7 @@ import { ReviewScreen } from './components/ReviewScreen';
 import { BehavioralInterview } from './components/BehavioralInterview';
 import { downloadMarkdown, copyMarkdown } from './utils/exportMarkdown';
 import { SavedInterview, InterviewSummary, fetchHistory, fetchInterview, saveInterview, deleteInterview } from './utils/history';
-import { api, getApiKey } from './utils/api';
+import { api, getApiKey, isConfigured, llmForSocket } from './utils/api';
 import { AuthScreen, AccountUser } from './components/AuthScreen';
 import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
@@ -27,7 +27,7 @@ export default function App() {
   const [view, setView] = useState<'home' | 'interview' | 'review'>('home');
   const [auth, setAuth] = useState<'loading' | 'anon' | 'authed'>('loading');
   const [user, setUser] = useState<AccountUser | null>(null);
-  const [hasKey, setHasKey] = useState(() => !!getApiKey());
+  const [hasKey, setHasKey] = useState(() => isConfigured());
   const [showKeySetup, setShowKeySetup] = useState(false);
   const [history, setHistory] = useState<InterviewSummary[]>([]);
   const [reviewRecord, setReviewRecord] = useState<SavedInterview | null>(null);
@@ -340,6 +340,7 @@ export default function App() {
             customQuestion: question,
             voice: options.voice,
             apiKey: getApiKey(),
+            llm: llmForSocket(),
             pushToTalk: options.pushToTalk,
             kickoff: true,
           })
@@ -410,23 +411,49 @@ export default function App() {
       };
 
       // Start Microphone Recording (non-blocking)
+      //
+      // The live model bills for every second of audio it receives and re-reads it on later turns, so silence is
+      // not sent in hands-free mode. Audio goes out while someone is speaking, preceded by a short pre-roll (so the
+      // start of a sentence is never clipped) and followed by a tail long enough for the server to hear the pause
+      // and end the turn. Push-to-talk already sends only what you hold the key for.
+      const GATE_THRESHOLD = 4; // on the 0-100 level meter; quiet speech is well above this, a still room well below
+      const PREROLL_MS = 450;
+      const HANGOVER_MS = 2000;
+      let lastLoudAt = 0;
+      let streaming = false;
+      let latestVolume = 0;
+      const preroll: { at: number; data: string }[] = [];
+      const sendAudio = (data: string) =>
+        wsRef.current?.send(JSON.stringify({ type: 'audio', data }));
+
       const recorder = new AudioRecorder(
         (base64Pcm) => {
-          // Send audio if Push-To-Talk is disabled OR if Space is currently pressed
-          if (
-            wsRef.current &&
-            wsRef.current.readyState === WebSocket.OPEN &&
-            (!options.pushToTalk || pttSendingRef.current)
-          ) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'audio',
-                data: base64Pcm,
-              })
-            );
+          const ws = wsRef.current;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          if (options.pushToTalk) {
+            if (pttSendingRef.current) sendAudio(base64Pcm);
+            return;
+          }
+          const now = performance.now();
+          if (latestVolume >= GATE_THRESHOLD) lastLoudAt = now;
+          if (now - lastLoudAt < HANGOVER_MS) {
+            if (!streaming) {
+              streaming = true;
+              for (const c of preroll) sendAudio(c.data);
+              preroll.length = 0;
+            }
+            sendAudio(base64Pcm);
+          } else {
+            if (streaming) {
+              streaming = false;
+              ws.send(JSON.stringify({ type: 'audio_end' })); // tell the model the mic went quiet
+            }
+            preroll.push({ at: now, data: base64Pcm });
+            while (preroll.length && now - preroll[0].at > PREROLL_MS) preroll.shift();
           }
         },
         (volume) => {
+          latestVolume = volume;
           setMicVolume(volume);
         }
       );
@@ -649,7 +676,7 @@ export default function App() {
     return (
       <KeySetup
         onSaved={() => {
-          setHasKey(!!getApiKey());
+          setHasKey(isConfigured());
           setShowKeySetup(false);
         }}
         onCancel={hasKey ? () => setShowKeySetup(false) : undefined}

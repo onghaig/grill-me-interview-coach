@@ -178,7 +178,7 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
             <div className="flex items-center gap-4 text-xs text-slate-400 min-w-0">
               {user && <span className="truncate max-w-[14rem]" title={user.email}>{user.email}</span>}
               <button onClick={onChangeKey} className="hover:text-slate-200 shrink-0">
-                Gemini key
+                Models and keys
               </button>
               <button onClick={onSignOut} className="hover:text-slate-200 shrink-0">
                 Sign out

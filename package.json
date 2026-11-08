@@ -14,6 +14,7 @@
     "test": "tsx --test src/utils/diagramSerializer.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@excalidraw/excalidraw": "^0.18.1",
     "@google/genai": "^3.0.0",
     "@tailwindcss/vite": "^4.3.3",

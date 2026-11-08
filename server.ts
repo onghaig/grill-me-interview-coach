@@ -24,6 +24,7 @@ import {
 } from "./server/auth.ts";
 import { registerInterviewRoutes } from "./server/interviews.ts";
 import { rateLimit } from "./server/limits.ts";
+import { generate, extractJson, LlmConfig, LlmError, Provider, PROVIDERS, PROVIDER_LABEL, MODEL_NAME_RE } from "./server/llm.ts";
 
 dotenv.config();
 
@@ -61,9 +62,9 @@ const LIMITS = {
   promptChars: 4_000,
 };
 
-// Each user brings their own Gemini key. It is used for the request and never stored or logged.
+// Each user brings their own API keys. They are used for the request and never stored or logged.
 function validKey(k: unknown): k is string {
-  return typeof k === "string" && k.length >= 20 && k.length <= 200 && !/\s/.test(k);
+  return typeof k === "string" && k.length >= 20 && k.length <= 300 && !/\s/.test(k);
 }
 function makeAi(key: string) {
   return new GoogleGenAI({
@@ -71,19 +72,45 @@ function makeAi(key: string) {
     httpOptions: { apiVersion: "v1beta", headers: { "User-Agent": "bar-raiser" } },
   });
 }
-function geminiKey(req: express.Request, res: express.Response): string | null {
-  const k = req.headers["x-gemini-key"];
-  const key = Array.isArray(k) ? k[0] : k;
-  if (!validKey(key)) {
-    res.status(400).json({ error: "Add your Gemini API key first (Account menu, Gemini key).", code: "no_key" });
+const header = (req: express.Request, name: string): string | undefined => {
+  const v = req.headers[name];
+  return Array.isArray(v) ? v[0] : v;
+};
+
+/**
+ * Which model runs question writing, rubrics and grading. Live voice always uses Gemini, so a Gemini key is
+ * always required; the text provider can be Gemini, OpenAI or Anthropic.
+ */
+function llmFromRequest(req: express.Request, res: express.Response): LlmConfig | null {
+  const geminiKey = header(req, "x-gemini-key");
+  if (!validKey(geminiKey)) {
+    res.status(400).json({ error: "Add your Gemini API key first (Account menu, Models and keys).", code: "no_key" });
     return null;
   }
-  return key;
+  const provider = (header(req, "x-llm-provider") || "gemini") as Provider;
+  if (!PROVIDERS.includes(provider)) {
+    res.status(400).json({ error: "Unknown model provider." });
+    return null;
+  }
+  const model = header(req, "x-llm-model") || undefined;
+  if (model && !MODEL_NAME_RE.test(model)) {
+    res.status(400).json({ error: "That model name has characters that are not allowed." });
+    return null;
+  }
+  if (provider === "gemini") return { provider, key: geminiKey, model };
+  const key = header(req, "x-llm-key");
+  if (!validKey(key)) {
+    res.status(400).json({ error: `Add your ${PROVIDER_LABEL[provider]} API key first (Account menu, Models and keys).`, code: "no_key" });
+    return null;
+  }
+  return { provider, key, model };
 }
 const perUser = rateLimit({ max: 20, key: (r) => `gen:${r.user?.id || r.ip}` });
 
-/** Turn a Gemini failure into something a user can act on, instead of a wall of JSON. */
-function sendGeminiError(res: express.Response, what: string, err: any) {
+/** Turn a model-provider failure into something a user can act on, instead of a wall of JSON. */
+function sendLlmError(res: express.Response, what: string, err: any) {
+  const provider: Provider = err instanceof LlmError ? err.provider : "gemini";
+  const label = PROVIDER_LABEL[provider];
   let status = Number(err?.status) || 0;
   if (!status) {
     try {
@@ -92,17 +119,25 @@ function sendGeminiError(res: express.Response, what: string, err: any) {
       /* not JSON */
     }
   }
-  console.error(`${what} failed (${status || "unknown"}):`, String(err?.message || err).slice(0, 300));
+  console.error(`${what} failed on ${provider} (${status || "unknown"}):`, String(err?.message || err).slice(0, 300));
   let message: string;
-  let code = "gemini_error";
+  let code = "llm_error";
   if (status === 429) {
     code = "key_quota";
-    message = "Your Gemini API key has run out of quota. Free keys have a daily limit, so try again later or use a key with billing enabled.";
-  } else if (status === 400 || status === 401 || status === 403) {
+    message = `Your ${label} API key has hit a quota or rate limit. Free keys have daily limits, so try again later or use a key with billing enabled.`;
+  } else if (status === 401 || status === 403) {
     code = "key_invalid";
-    message = "Google rejected your Gemini API key. Open the account menu, choose Gemini key, and check it.";
-  } else if (status === 503 || status === 500) {
-    message = `${what} failed because Gemini is overloaded right now. Try again in a minute.`;
+    message = `${label} rejected your API key. Open the account menu, choose Models and keys, and check it.`;
+  } else if (status === 404) {
+    code = "model_not_found";
+    message = `${label} does not recognise the model name you chose. Open Models and keys and fix or clear it.`;
+  } else if (status === 400 && provider === "gemini") {
+    code = "key_invalid";
+    message = "Google rejected your Gemini API key. Open the account menu, choose Models and keys, and check it.";
+  } else if (status === 503 || status === 500 || status === 529) {
+    message = `${what} failed because ${label} is overloaded right now. Try again in a minute.`;
+  } else if (status === 422) {
+    message = `${label} declined this request. Try rewording the question.`;
   } else {
     message = `${what} failed: ${String(err?.message || err).slice(0, 200)}`;
   }
@@ -110,37 +145,30 @@ function sendGeminiError(res: express.Response, what: string, err: any) {
 }
 
 app.post("/api/key/check", requireAuth, perUser, async (req, res) => {
+  const provider = (req.body?.provider || "gemini") as Provider;
   const key = req.body?.apiKey;
-  if (!validKey(key)) return res.status(400).json({ error: "That does not look like a Gemini API key." });
+  const model = typeof req.body?.model === "string" && req.body.model ? req.body.model.trim() : undefined;
+  if (!PROVIDERS.includes(provider)) return res.status(400).json({ error: "Unknown model provider." });
+  const label = PROVIDER_LABEL[provider];
+  if (!validKey(key)) return res.status(400).json({ error: `That does not look like a ${label} API key.` });
+  if (model && !MODEL_NAME_RE.test(model)) return res.status(400).json({ error: "That model name has characters that are not allowed." });
   try {
-    await makeAi(key).models.generateContent({ model: "gemini-2.5-flash", contents: "Reply with ok." });
+    await generate({ provider, key, model }, { prompt: "Reply with the single word ok." });
     res.json({ ok: true });
   } catch (err: any) {
     const status = Number(err?.status) || 0;
+    if (status === 429) {
+      return res.json({ ok: true, warning: `That ${label} key is out of quota right now. It looks valid, so it has been saved.` });
+    }
     const msg =
-      status === 400 || status === 401 || status === 403
-        ? "Google rejected that key. Check that you copied it correctly and that the Gemini API is enabled for it."
-        : status === 429
-        ? "That key is out of quota right now. It looks valid, so you can still save it."
-        : "Could not reach Gemini to check the key. Try again.";
-    res.status(status === 429 ? 200 : 400).json(status === 429 ? { ok: true, warning: msg } : { error: msg });
+      status === 401 || status === 403 || (status === 400 && provider === "gemini")
+        ? `${label} rejected that key. Check that you copied it correctly${provider === "gemini" ? " and that the Gemini API is enabled for it" : ""}.`
+        : status === 404
+        ? `${label} does not recognise the model name "${model || "(default)"}". Clear the model field to use the default.`
+        : `Could not check the ${label} key: ${String(err?.message || err).slice(0, 160)}`;
+    res.status(400).json({ error: msg });
   }
 });
-
-// Text models tried in order; falls through on overload/unavailable errors.
-const TEXT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-2.5-flash"];
-async function generateWithFallback(ai: GoogleGenAI, params: { contents: any; config?: any }) {
-  let lastErr: unknown;
-  for (const model of TEXT_MODELS) {
-    try {
-      return await ai.models.generateContent({ model, ...params });
-    } catch (err) {
-      lastErr = err;
-      console.warn(`generateContent failed on ${model}:`, (err as any)?.status ?? err);
-    }
-  }
-  throw lastErr;
-}
 
 // API: list questions
 app.get("/api/questions", (_req, res) => {
@@ -175,15 +203,15 @@ Then turn it into a well-scoped interview question and a grading rubric. Output 
         "name": "category name",
         "weight": number,
         "description": "what is being assessed",
-        "strongSignals": ["observable behaviours of a strong answer"],
-        "weakSignals": ["observable behaviours of a weak answer"]
+        "strongSignals": ["2-3 observable behaviours of a strong answer"],
+        "weakSignals": ["2-3 observable behaviours of a weak answer"]
       }
     ],
-    "mustCover": ["specific technical topics a strong candidate must address for THIS question"],
-    "redFlags": ["specific mistakes that should count heavily against the candidate"]
+    "mustCover": ["4-6 specific technical topics a strong candidate must address for THIS question"],
+    "redFlags": ["3-5 specific mistakes that should count heavily against the candidate"]
   }
 }
-Rules: 5 to 6 categories whose weights are integers summing to exactly 100. Make every signal specific to this question, not generic. Categories by type:
+Rules: 5 to 6 categories whose weights are integers summing to exactly 100. Make every signal specific to this question, not generic. Keep every field short: one sentence per description, notes under 150 words. Categories by type:
 - system_design: requirements/scoping, estimation, high-level architecture, deep dive on the hardest part of THIS problem, communication/trade-offs.
 - low_level_design: requirements & use cases, entity and relationship modelling, class/interface design (SOLID, patterns used appropriately), extensibility under a new requirement, code quality of the key methods, concurrency/error handling, communication.
 - coding: problem understanding & clarifying questions, approach & algorithm choice, correctness of the implementation, complexity analysis, testing (dry run, edge cases), code quality, communication and handling of hints. If the input is vague, pick the most sensible well-known interpretation.`;
@@ -234,18 +262,14 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
     const userPrompt = String(req.body?.prompt || "").trim();
     if (!userPrompt) return res.status(400).json({ error: "Enter a question or topic first." });
     if (userPrompt.length > LIMITS.promptChars) return res.status(413).json({ error: `Keep the question under ${LIMITS.promptChars} characters.` });
-    const key = geminiKey(req, res);
-    if (!key) return;
-    const ai = makeAi(key);
+    const llm = llmFromRequest(req, res);
+    if (!llm) return;
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await generateWithFallback(ai, {
-          contents: RUBRIC_PROMPT(userPrompt),
-          config: { responseMimeType: "application/json" },
-        });
-        const question = normalizeRubricQuestion(JSON.parse(response.text || "{}"), userPrompt);
+        const text = await generate(llm, { prompt: RUBRIC_PROMPT(userPrompt), json: true });
+        const question = normalizeRubricQuestion(extractJson(text), userPrompt);
         return res.json({ question });
       } catch (err) {
         lastErr = err;
@@ -254,7 +278,7 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
     throw lastErr;
   } catch (error: any) {
     console.error("Rubric generation error:", error);
-    sendGeminiError(res, "Building the question", error);
+    sendLlmError(res, "Building the question", error);
   }
 });
 
@@ -275,13 +299,13 @@ Output ONLY valid JSON:
     {
       "competency": "exact principle or competency name this question assesses",
       "question": "an open question that asks for ONE specific past example, phrased the way a person would say it aloud",
-      "followUps": ["2 or 3 probing follow-ups: the candidate's own role, the decision and trade-off, the measurable result, what they would change"],
+      "followUps": ["2 probing follow-ups: the candidate's own role and decision, and the measurable result"],
       "anchor": "the specific resume item this is based on, or empty"
     }
   ],
-  "questionNotes": "PRIVATE. For each competency: what a strong answer sounds like for this seniority, and the common weak patterns (all 'we', no metrics, no ownership, blame).",
+  "questionNotes": "PRIVATE. Under 150 words: what a strong answer sounds like at this seniority, and the common weak patterns (all 'we', no metrics, no ownership, blame).",
   "rubric": {
-    "categories": [{ "name": "category", "weight": number, "description": "what is assessed", "strongSignals": ["..."], "weakSignals": ["..."] }],
+    "categories": [{ "name": "category", "weight": number, "description": "one sentence: what is assessed", "strongSignals": ["2-3 items"], "weakSignals": ["2-3 items"] }],
     "mustCover": ["competencies or principles that must come up with a real example"],
     "redFlags": ["specific behaviours that count heavily against the candidate"]
   }
@@ -355,20 +379,21 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
     if (!resumeText && !hasPdf && !principles && !role) {
       return res.status(400).json({ error: "Add a resume, or the principles or role you want to be interviewed on." });
     }
-    const key = geminiKey(req, res);
-    if (!key) return;
-    const ai = makeAi(key);
+    const llm = llmFromRequest(req, res);
+    if (!llm) return;
 
     const prompt = BEHAVIORAL_PROMPT({ resumeText, hasPdf, principles, role });
-    const contents = hasPdf
-      ? [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "application/pdf", data: pdf!.data! } }] }]
-      : prompt;
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const response = await generateWithFallback(ai, { contents, config: { responseMimeType: "application/json", responseSchema: BEHAVIORAL_SCHEMA } });
-        const raw = JSON.parse(response.text || "{}");
+        const text = await generate(llm, {
+          prompt,
+          pdf: hasPdf ? { data: pdf!.data!, mimeType: "application/pdf" } : undefined,
+          json: true,
+          geminiSchema: BEHAVIORAL_SCHEMA,
+        });
+        const raw = extractJson(text);
         const question: any = normalizeRubricQuestion({ ...raw, type: "behavioral" }, role || principles || "Behavioral interview");
         const planned = (Array.isArray(raw.plannedQuestions) ? raw.plannedQuestions : [])
           .filter((q: any) => q && q.question)
@@ -392,15 +417,14 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
     throw lastErr;
   } catch (error: any) {
     console.error("Behavioral generation error:", error);
-    sendGeminiError(res, "Preparing the interview", error);
+    sendLlmError(res, "Preparing the interview", error);
   }
 });
 
 app.post("/api/grade", requireAuth, perUser, async (req, res) => {
   try {
-    const key = geminiKey(req, res);
-    if (!key) return;
-    const ai = makeAi(key);
+    const llm = llmFromRequest(req, res);
+    if (!llm) return;
     const { question, transcript, diagramText, codeText, durationSeconds } = req.body;
     const qType: string = question?.type || "system_design";
     const roleLine =
@@ -416,9 +440,10 @@ app.post("/api/grade", requireAuth, perUser, async (req, res) => {
       return res.status(400).json({ error: "No transcript provided to grade." });
     }
 
-    const transcriptFormatted = transcript
-      .map((t: { role: string; text: string; time?: string }) => `[${t.role.toUpperCase()} - ${t.time || ''}]: ${t.text}`)
-      .join("\n\n");
+    // No timestamps or banner formatting: they cost tokens and carry no grading signal
+    const transcriptFormatted = (Array.isArray(transcript) ? transcript : [])
+      .map((t: { role: string; text: string }) => `${t.role === "user" ? "Candidate" : "Interviewer"}: ${String(t.text || "").trim()}`)
+      .join("\n");
 
     const rubric = question?.rubric;
     const categoryTemplate = rubric
@@ -427,21 +452,21 @@ app.post("/api/grade", requireAuth, perUser, async (req, res) => {
             (c: any) => `    {
       "name": ${JSON.stringify(c.name)},
       "score": number (1-5),
-      "feedback": "Evidence-based analysis against this category (weight ${c.weight}%)"
+      "feedback": "1-2 sentences of evidence (weight ${c.weight}%)"
     }`
           )
           .join(",\n")
       : qType === "behavioral"
       ? ["Specificity & Structure of Examples", "Ownership & Personal Impact", "Results & Metrics", "Judgment & Trade-offs", "Self-Awareness & Learning", "Communication"]
-          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "Evidence-based analysis"\n    }`)
+          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "1-2 sentences of evidence"\n    }`)
           .join(",\n")
       : qType === "coding"
       ? ["Problem Understanding & Clarification", "Approach & Algorithm Choice", "Correctness of Implementation", "Complexity Analysis", "Testing & Edge Cases", "Communication & Use of Hints"]
-          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "Evidence-based analysis"\n    }`)
+          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "1-2 sentences of evidence"\n    }`)
           .join(",\n")
       : qType === "low_level_design"
       ? ["Requirements & Use Cases", "Entity & Relationship Modelling", "Class & Interface Design (SOLID, Patterns)", "Extensibility & Edge Cases", "Code Quality of Key Methods", "Communication & Drive"]
-          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "Evidence-based analysis"\n    }`)
+          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "1-2 sentences of evidence"\n    }`)
           .join(",\n")
       : `    {
       "name": "Requirement Clarification & Scoping",
@@ -483,52 +508,41 @@ In your feedback, say which must-cover topics were hit or missed and call out an
 `
       : "";
 
-    const gradingPrompt = `You are ${roleLine}.
-Review the following ${qType === "behavioral" ? "behavioral" : qType === "coding" ? "coding" : qType === "low_level_design" ? "low-level design" : "system design"} interview performance and provide a comprehensive, realistic evaluation rubric.
+    const kind = qType === "behavioral" ? "behavioral" : qType === "coding" ? "coding" : qType === "low_level_design" ? "low-level design" : "system design";
+    const showDiagram = qType !== "behavioral" && !!String(diagramText || "").trim();
+    const showCode = qType !== "behavioral" && !!String(codeText || "").trim();
+    const typeNote =
+      qType === "behavioral"
+        ? "This was a spoken behavioral interview. Grade on specific examples, the candidate's own actions (I versus we), measurable results, judgment and self-awareness, and credit only what the transcript shows."
+        : qType === "coding"
+        ? "Judge the correctness and complexity of the final code, whether they tested it, and how many hints they needed."
+        : "";
 
-QUESTION:
-Title: ${question?.title || "System Design Question"}
-Scale: ${question?.scale || "High Scale"}
-Overview: ${question?.description || ""}
+    const gradingPrompt = `You are ${roleLine}. Grade this ${kind} interview strictly on evidence.
 
-${rubricBlock}
-INTERVIEW DURATION: ${Math.round((durationSeconds || 0) / 60)} minutes
-
-LATEST WHITEBOARD DIAGRAM (EXCALIDRAW SERIALIZATION):
-${diagramText || "(No diagram components created)"}
-
-FINAL CODE IN THE EDITOR:
-${codeText || "(No code written)"}
-${qType === "behavioral" ? "This was a spoken behavioral interview: ignore the diagram and code sections. Grade on specific examples, the candidate\u0027s own actions (I versus we), measurable results, judgment and self-awareness, and credit only what the transcript shows." : ""}
-${qType === "coding" ? "For coding, judge actual correctness and complexity of the final code, whether they tested it, and how many hints they needed." : ""}
-
-INTERVIEW TRANSCRIPT:
+QUESTION: ${question?.title || "Interview question"}
+${question?.scale ? `Scope: ${question.scale}\n` : ""}${question?.description ? `${question.description}\n` : ""}${rubricBlock}Duration: ${Math.round((durationSeconds || 0) / 60)} minutes.
+${typeNote}
+${showDiagram ? `\nWHITEBOARD (text serialization of the final diagram):\n${diagramText}\n` : ""}${showCode ? `\nFINAL CODE:\n${codeText}\n` : ""}
+TRANSCRIPT:
 ${transcriptFormatted}
 
-Evaluate the candidate rigorously and output valid JSON with the following structure:
+Reply with JSON only, in this shape. Be concise but specific: cite evidence from the transcript, never generic praise.
 {
   "overallVerdict": "Strong Hire" | "Hire" | "Lean Hire" | "Lean No Hire" | "No Hire",
   "totalScore": number (1-100),
-  "summary": "2-3 sentences summarizing performance and decision rationale",
+  "summary": "2-3 sentences: performance and the decision rationale",
   "categoryScores": [
 ${categoryTemplate}
   ],
-  "strengths": ["string", "string", "string"],
-  "areasForImprovement": ["string", "string", "string"],
-  "keyArchitecturalTradeoffs": ["string", "string"],
-  "recommendedStudyTopics": ["string", "string"]
+  "strengths": ["2-3 items, one sentence each"],
+  "areasForImprovement": ["2-3 items, one sentence each"],
+  "keyArchitecturalTradeoffs": ["up to 2 trade-offs the candidate discussed or should have; empty if none apply"],
+  "recommendedStudyTopics": ["2-3 short topic names"]
 }`;
 
     {
-      const response = await generateWithFallback(ai, {
-        contents: gradingPrompt,
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
-
-      const jsonText = response.text || "{}";
-      const parsed = JSON.parse(jsonText);
+      const parsed = extractJson(await generate(llm, { prompt: gradingPrompt, json: true }));
       if (rubric && Array.isArray(parsed.categoryScores)) {
         let weighted = 0;
         let weightSum = 0;
@@ -547,7 +561,7 @@ ${categoryTemplate}
 
   } catch (error: any) {
     console.error("Grading error:", error);
-    sendGeminiError(res, "Grading", error);
+    sendLlmError(res, "Grading", error);
   }
 });
 
@@ -607,6 +621,7 @@ wss.on("connection", (clientWs: WebSocket, req) => {
     ? userFromCookieHeader(req.headers.cookie).catch(() => null)
     : Promise.resolve(null);
   let ai: GoogleGenAI | null = null;
+  let llmCfg: LlmConfig | null = null;
   let userId: string | null = null;
   let leaseHolder: string | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -628,8 +643,36 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   let sessionGen = 0;
   let latestCodeContext = "";
 
+  // Whiteboard and code snapshots are appended to the live conversation, and the model re-reads the whole
+  // conversation on every turn. So skip identical snapshots and send at most one per kind every 12 seconds
+  // (the newest one always goes out last).
+  const CONTEXT_GAP_MS = 12_000;
+  const lastContext: Record<string, { sent: string; at: number }> = {};
+  const contextTimers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  const pushContext = (kind: "diagram" | "code", raw: string, formatted: string) => {
+    const last = lastContext[kind] || (lastContext[kind] = { sent: "", at: 0 });
+    if (raw === last.sent) return;
+    const deliver = () => {
+      last.sent = raw;
+      last.at = Date.now();
+      if (liveSession && sessionMode === "live_socket" && isConnected) {
+        liveSession.sendClientContent({ turns: [{ role: "user", parts: [{ text: formatted }] }], turnComplete: false });
+      } else if (sessionMode === "conversational_engine" && isConnected) {
+        // Keep only the latest snapshot of each kind in the text history
+        conversationHistory = conversationHistory.filter((c) => !(c.role === "note" && c.text.startsWith(`[${kind.toUpperCase()} UPDATE]`)));
+        conversationHistory.push({ role: "note", text: formatted });
+      }
+    };
+    clearTimeout(contextTimers[kind]);
+    const wait = last.at + CONTEXT_GAP_MS - Date.now();
+    if (wait <= 0) deliver();
+    else contextTimers[kind] = setTimeout(deliver, wait);
+  };
+
   const cleanupSession = async () => {
     sessionGen++;
+    for (const k of Object.keys(contextTimers)) clearTimeout(contextTimers[k]);
+    for (const k of Object.keys(lastContext)) delete lastContext[k];
     if (heartbeat) {
       clearInterval(heartbeat);
       heartbeat = null;
@@ -669,7 +712,7 @@ Latest Code In Editor:
 ${latestCodeContext || "(No code yet)"}
 
 Conversation History:
-${conversationHistory.map((c) => (c.role === 'note' ? `(Background note, nobody said this aloud) ${c.text}` : `${c.role === 'user' ? 'Candidate' : 'Interviewer'}: ${c.text}`)).join('\n')}
+${conversationHistory.slice(-16).map((c) => (c.role === 'note' ? `(Background note, nobody said this aloud) ${c.text}` : `${c.role === 'user' ? 'Candidate' : 'Interviewer'}: ${c.text}`)).join('\n')}
 ${coachGuidance}
 ${isEvent ? 'Latest event (not spoken by the candidate):' : 'Latest Candidate Input:'}
 ${userPrompt}
@@ -682,12 +725,9 @@ Remember:
 - Never say bracketed tags or system wording out loud. Speak only as the interviewer.
 Interviewer Spoken Response:`;
 
-      if (ai) {
-        const response = await generateWithFallback(ai, {
-          contents: promptContext,
-        });
-
-        const replyText = (response.text || "").replace(/\[[A-Z][A-Z _-]*(?::[^\]]*)?\]:?/g, "").trim();
+      if (llmCfg) {
+        const reply = await generate(llmCfg, { prompt: promptContext });
+        const replyText = reply.replace(/\[[A-Z][A-Z _-]*(?::[^\]]*)?\]:?/g, "").trim();
         if (replyText) {
           conversationHistory.push({ role: "model", text: replyText });
           clientWs.send(
@@ -754,10 +794,22 @@ Interviewer Spoken Response:`;
 
         const key = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
         if (!validKey(key)) {
-          sendJson({ type: "error", code: "no_key", error: "Add your Gemini API key first (Account menu, Gemini key)." });
+          sendJson({ type: "error", code: "no_key", error: "Add your Gemini API key first (Account menu, Models and keys)." });
           return;
         }
-        ai = makeAi(key);
+        ai = makeAi(key); // live voice is always Gemini
+
+        // The text fallback (used only if the live voice connection is unavailable) follows the user's provider choice
+        const wanted: Provider = PROVIDERS.includes(msg.llm?.provider) ? msg.llm.provider : "gemini";
+        const wantedModel = typeof msg.llm?.model === "string" && MODEL_NAME_RE.test(msg.llm.model) ? msg.llm.model : undefined;
+        if (wanted === "gemini") {
+          llmCfg = { provider: "gemini", key, model: wantedModel };
+        } else if (validKey(msg.llm?.key)) {
+          llmCfg = { provider: wanted, key: msg.llm.key, model: wantedModel };
+        } else {
+          sendJson({ type: "error", code: "no_key", error: `Add your ${PROVIDER_LABEL[wanted]} API key first (Account menu, Models and keys).` });
+          return;
+        }
 
         // One live interview per account, across all tabs, devices and server instances
         const holder = crypto.randomUUID();
@@ -802,7 +854,7 @@ Interviewer Spoken Response:`;
 
         // Try connecting via Gemini Live API first
         let liveConnected = false;
-        if (ai) {
+        {
           // Attempt Live API connection
           const liveModelsToTry = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
           for (const modelCandidate of liveModelsToTry) {
@@ -811,6 +863,9 @@ Interviewer Spoken Response:`;
                 model: modelCandidate,
                 config: {
                   responseModalities: [Modality.AUDIO],
+                  // Long interviews: once the conversation is large, drop the oldest turns instead of re-reading all of it
+                  // on every reply. The thresholds are high so a normal 30 minute interview keeps its full context.
+                  contextWindowCompression: { triggerTokens: "90000", slidingWindow: { targetTokens: "50000" } },
                   speechConfig: {
                     voiceConfig: {
                       prebuiltVoiceConfig: {
@@ -973,6 +1028,11 @@ Interviewer Spoken Response:`;
             },
           });
         }
+      } else if (msg.type === "audio_end") {
+        // The client stopped sending audio because the mic went quiet; flush anything the model has buffered
+        if (liveSession && sessionMode === "live_socket" && isConnected && !pushToTalk) {
+          liveSession.sendRealtimeInput({ audioStreamEnd: true });
+        }
       } else if (msg.type === "ptt_start") {
         if (liveSession && sessionMode === "live_socket" && isConnected && pushToTalk) {
           liveSession.sendRealtimeInput({ activityStart: {} });
@@ -983,31 +1043,10 @@ Interviewer Spoken Response:`;
         }
       } else if (msg.type === "code") {
         latestCodeContext = String(msg.text || "").slice(0, 12000);
-        const codeMsg = `[CODE UPDATE] (${msg.language || "code"})\n${latestCodeContext}`;
-        if (liveSession && sessionMode === "live_socket" && isConnected) {
-          liveSession.sendClientContent({
-            turns: [{ role: "user", parts: [{ text: codeMsg }] }],
-            turnComplete: false,
-          });
-        } else if (sessionMode === "conversational_engine" && isConnected) {
-          conversationHistory.push({ role: "note", text: codeMsg });
-        }
+        pushContext("code", latestCodeContext, `[CODE UPDATE] (${msg.language || "code"})\n${latestCodeContext}`);
       } else if (msg.type === "diagram") {
-        latestDiagramContext = msg.text;
-        if (liveSession && sessionMode === "live_socket" && isConnected) {
-          liveSession.sendClientContent({
-            turns: [
-              {
-                role: "user",
-                parts: [{ text: `[DIAGRAM UPDATE]\n${msg.text}` }],
-              },
-            ],
-            turnComplete: false,
-          });
-        } else if (sessionMode === "conversational_engine" && isConnected) {
-          // Process diagram update
-          conversationHistory.push({ role: "note", text: `[DIAGRAM UPDATE]\n${msg.text}` });
-        }
+        latestDiagramContext = String(msg.text || "").slice(0, 8000);
+        pushContext("diagram", latestDiagramContext, `[DIAGRAM UPDATE]\n${latestDiagramContext}`);
       } else if (msg.type === "coach") {
         if (liveSession && sessionMode === "live_socket" && isConnected) {
           liveSession.sendClientContent({
