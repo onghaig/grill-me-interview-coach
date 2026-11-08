@@ -5,6 +5,8 @@ import { ScorecardModal } from './components/ScorecardModal';
 import { HomeScreen, StartOptions } from './components/HomeScreen';
 import { CodeEditor } from './components/CodeEditor';
 import { ProblemStatement } from './components/ProblemStatement';
+import { ReviewScreen } from './components/ReviewScreen';
+import { SavedInterview, loadHistory, saveInterview, deleteInterview } from './utils/history';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
@@ -17,7 +19,10 @@ export default function App() {
   const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);
   const [isPushToTalk, setIsPushToTalk] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
-  const [view, setView] = useState<'home' | 'interview'>('home');
+  const [view, setView] = useState<'home' | 'interview' | 'review'>('home');
+  const [history, setHistory] = useState<SavedInterview[]>(() => loadHistory());
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const savedIdRef = useRef<string | null>(null);
   const [voice, setVoice] = useState('Sulafat');
   const [workspaceTab, setWorkspaceTab] = useState<'problem' | 'whiteboard' | 'code'>('whiteboard');
   const [code, setCode] = useState('');
@@ -416,10 +421,64 @@ export default function App() {
     }
   };
 
+  const requestGrade = async (payload: {
+    question: SystemDesignQuestion;
+    transcript: TranscriptEntry[];
+    diagramText: string;
+    codeText: string;
+    durationSeconds: number;
+  }): Promise<ScorecardData> => {
+    const response = await fetch('/api/grade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Grading request failed with status ${response.status}`);
+    }
+    return response.json();
+  };
+
+  const codeTextFor = (c: string, lang: string) => (c ? `Language: ${lang}\n${c}` : '');
+
+  const handleRegrade = async (id: string) => {
+    const entry = loadHistory().find((e) => e.id === id);
+    if (!entry) throw new Error('This interview is no longer saved.');
+    const scorecard = await requestGrade({
+      question: entry.question,
+      transcript: entry.transcript,
+      diagramText: entry.diagramText,
+      codeText: codeTextFor(entry.code, entry.codeLanguage),
+      durationSeconds: entry.durationSeconds,
+    });
+    setHistory(saveInterview({ ...entry, scorecard }));
+  };
+
   // End interview session & trigger grading
   const handleEndInterview = async () => {
     const elapsed = Math.round(30 * 60 - remainingSeconds);
     setInterviewDurationSeconds(elapsed);
+
+    // Save right away so nothing is lost if grading fails
+    const savedId = `iv_${Date.now()}`;
+    savedIdRef.current = null;
+    if (transcripts.length > 0) {
+      savedIdRef.current = savedId;
+      setHistory(
+        saveInterview({
+          id: savedId,
+          savedAt: Date.now(),
+          question: currentQuestion,
+          transcript: transcripts,
+          diagramText: latestDiagramText,
+          code,
+          codeLanguage,
+          durationSeconds: elapsed,
+          scorecard: null,
+        })
+      );
+    }
 
     // Stop recorder & audio
     if (audioRecorderRef.current) {
@@ -452,24 +511,17 @@ export default function App() {
 
     // Call grading endpoint
     try {
-      const response = await fetch('/api/grade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: currentQuestion,
-          transcript: transcripts,
-          diagramText: latestDiagramText,
-          codeText: code ? `Language: ${codeLanguage}\n${code}` : '',
-          durationSeconds: elapsed,
-        }),
+      const scorecardData = await requestGrade({
+        question: currentQuestion,
+        transcript: transcripts,
+        diagramText: latestDiagramText,
+        codeText: codeTextFor(code, codeLanguage),
+        durationSeconds: elapsed,
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Grading request failed with status ${response.status}`);
+      if (savedIdRef.current) {
+        const saved = loadHistory().find((e) => e.id === savedIdRef.current);
+        if (saved) setHistory(saveInterview({ ...saved, scorecard: scorecardData }));
       }
-
-      const scorecardData = await response.json();
       setScorecard(scorecardData);
     } catch (err) {
       console.error('Failed to grade interview:', err);
@@ -480,8 +532,35 @@ export default function App() {
     }
   };
 
-  if (view === 'home') {
-    return <HomeScreen onStart={handleHomeStart} />;
+  if (view === 'review') {
+    const entry = history.find((e) => e.id === reviewId);
+    if (entry) {
+      return (
+        <ReviewScreen
+          key={entry.id + (entry.scorecard ? '-g' : '-u')}
+          interview={entry}
+          onBack={() => setView('home')}
+          onDelete={() => {
+            setHistory(deleteInterview(entry.id));
+            setView('home');
+          }}
+          onRegrade={() => handleRegrade(entry.id)}
+        />
+      );
+    }
+  }
+
+  if (view === 'home' || view === 'review') {
+    return (
+      <HomeScreen
+        onStart={handleHomeStart}
+        history={history}
+        onOpenInterview={(id) => {
+          setReviewId(id);
+          setView('review');
+        }}
+      />
+    );
   }
 
   return (

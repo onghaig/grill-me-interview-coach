@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, ShieldAlert, ListChecks, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
+import { SavedInterview } from '../utils/history';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS, QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
 
 export const VOICES = [
@@ -20,6 +21,8 @@ export interface StartOptions {
 
 interface HomeScreenProps {
   onStart: (question: SystemDesignQuestion, options: StartOptions) => void;
+  history: SavedInterview[];
+  onOpenInterview: (id: string) => void;
 }
 
 const EXAMPLES = [
@@ -31,7 +34,7 @@ const EXAMPLES = [
   'Merge k sorted lists',
 ];
 
-export function HomeScreen({ onStart }: HomeScreenProps) {
+export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProps) {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +203,45 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 </button>
               ))}
             </div>
+
+            {history.length > 0 && (
+              <section className="mt-12">
+                <h2 className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-3">
+                  Past interviews
+                  <span className="ml-2 normal-case tracking-normal text-slate-600">saved in this browser</span>
+                </h2>
+                <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-900/40">
+                  {history.map((h) => (
+                    <li key={h.id}>
+                      <button
+                        onClick={() => onOpenInterview(h.id)}
+                        className="w-full text-left px-4 py-3 flex items-center justify-between gap-4 hover:bg-slate-900 transition"
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium truncate">{h.question.title}</span>
+                          <span className="block text-[11px] text-slate-500 mt-0.5">
+                            {QUESTION_TYPE_LABELS[h.question.type || 'system_design']} ·{' '}
+                            {new Date(h.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} ·{' '}
+                            {Math.max(1, Math.round(h.durationSeconds / 60))} min
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs text-right">
+                          {h.scorecard ? (
+                            <>
+                              <span className="font-display text-lg text-slate-50">{h.scorecard.totalScore}</span>
+                              <span className="text-slate-500">/100</span>
+                              <span className="block text-[11px] text-slate-400">{h.scorecard.overallVerdict}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-500">Not graded</span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </>
         ) : (
           <div>
