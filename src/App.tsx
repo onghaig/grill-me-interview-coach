@@ -551,6 +551,7 @@ export default function App() {
           latestDiagramText={latestDiagramText}
           onSendCoachGuidance={handleSendCoachGuidance}
           onSendCandidateText={handleSendCandidateText}
+          getAudioLevel={() => audioPlayerRef.current?.getLevel() ?? 0}
           onPttPress={pttPress}
           onPttRelease={pttRelease}
           onGoHome={() => {

@@ -154,6 +154,8 @@ export class AudioRecorder {
 
 export class AudioPlayer {
   private audioCtx: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private levelBuf: Uint8Array<ArrayBuffer> | null = null;
   private nextStartTime = 0;
   private activeSources: AudioBufferSourceNode[] = [];
   private currentUtterance: SpeechSynthesisUtterance | null = null;
@@ -181,6 +183,11 @@ export class AudioPlayer {
       } catch {
         this.audioCtx = new AudioCtxClass();
       }
+      // All Live API audio goes through this analyser so the avatar can follow the voice
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.connect(this.audioCtx.destination);
+      this.levelBuf = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
     }
     if (this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch(() => {});
@@ -247,7 +254,7 @@ export class AudioPlayer {
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      source.connect(this.analyser ?? ctx.destination);
 
       const currentTime = ctx.currentTime;
       // Small lead on the first chunk of a burst so network jitter doesn't cause audible gaps
@@ -272,6 +279,18 @@ export class AudioPlayer {
     } catch (err) {
       console.error('AudioPlayer playChunk error:', err);
     }
+  }
+
+  /** Current output loudness, 0 (silent) to 1 (loud). */
+  getLevel(): number {
+    if (!this.analyser || !this.levelBuf || !this.isPlaying) return 0;
+    this.analyser.getByteTimeDomainData(this.levelBuf);
+    let sum = 0;
+    for (let i = 0; i < this.levelBuf.length; i++) {
+      const v = (this.levelBuf[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.min(1, Math.sqrt(sum / this.levelBuf.length) * 4);
   }
 
   /**

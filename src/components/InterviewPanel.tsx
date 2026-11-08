@@ -18,6 +18,7 @@ import {
   Send,
 } from 'lucide-react';
 import { InterviewPhase, getPhases, TranscriptEntry } from '../types';
+import { InterviewerFace } from './InterviewerFace';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../../prompts/interviewer';
 
 interface InterviewPanelProps {
@@ -44,6 +45,7 @@ interface InterviewPanelProps {
   onPttPress: () => void;
   onPttRelease: () => void;
   onGoHome: () => void;
+  getAudioLevel: () => number;
 }
 
 export function InterviewPanel({
@@ -70,6 +72,7 @@ export function InterviewPanel({
   onPttPress,
   onPttRelease,
   onGoHome,
+  getAudioLevel,
 }: InterviewPanelProps) {
   const [showQuestionSelector, setShowQuestionSelector] = useState(false);
   const [showQuestionDetails, setShowQuestionDetails] = useState(false);
@@ -253,6 +256,31 @@ export function InterviewPanel({
             </div>
           </div>
         )}
+      </div>
+
+      {/* Interviewer avatar */}
+      <div className="px-3.5 py-3 border-b border-slate-800 bg-slate-900/40 flex items-center gap-3.5">
+        <div className="w-16 h-[70px] shrink-0">
+          <InterviewerFace
+            getLevel={getAudioLevel}
+            speaking={isInterviewerSpeaking}
+            listening={isInterviewActive && !isInterviewerSpeaking && (isPushToTalk ? isSpacePressed : micVolume > 15)}
+          />
+        </div>
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-slate-200">Interviewer</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            {!isInterviewActive
+              ? isConnecting
+                ? 'Joining the call...'
+                : 'Waiting for you to start'
+              : isInterviewerSpeaking
+              ? 'Speaking'
+              : (isPushToTalk ? isSpacePressed : micVolume > 15)
+              ? 'Listening'
+              : 'Waiting for your answer'}
+          </div>
+        </div>
       </div>
 
       {/* Phase Indicator & Countdown Timer Bar */}
