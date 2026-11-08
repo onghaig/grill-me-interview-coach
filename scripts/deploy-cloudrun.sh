@@ -28,8 +28,14 @@ fi
 
 # Let the Cloud Run service account read the secret
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+# New projects no longer give the default service account enough rights to build from source
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${COMPUTE_SA}" \
+  --role=roles/cloudbuild.builds.builder --condition=None >/dev/null
 gcloud secrets add-iam-policy-binding "$SECRET" \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --member="serviceAccount:${COMPUTE_SA}" \
   --role=roles/secretmanager.secretAccessor --project "$PROJECT_ID" >/dev/null
 
 # --timeout 3600: live interviews are one long WebSocket request, and the default (5 minutes) would cut them off

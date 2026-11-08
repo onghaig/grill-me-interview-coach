@@ -136,7 +136,8 @@ export function KeySetup({ onSaved, onCancel }: KeySetupProps) {
   );
 
   return (
-    <div className="min-h-screen w-screen overflow-y-auto bg-slate-950 text-slate-100 flex items-center justify-center px-6 py-12">
+    <div className="h-screen w-screen overflow-y-auto bg-slate-950 text-slate-100">
+      <div className="min-h-full flex items-center justify-center px-6 py-12">
       <div className="w-full max-w-lg">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
           <span className="w-2 h-2 rounded-full bg-indigo-500" />
@@ -331,6 +332,7 @@ export function KeySetup({ onSaved, onCancel }: KeySetupProps) {
             )}
           </div>
         </form>
+      </div>
       </div>
     </div>
   );
