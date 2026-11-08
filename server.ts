@@ -856,7 +856,10 @@ Interviewer Spoken Response:`;
         let liveConnected = false;
         {
           // Attempt Live API connection
-          const liveModelsToTry = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
+          // The user may pick the live model; it is tried first, then the others as fallbacks
+          const LIVE_MODELS = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
+          const chosenLive = LIVE_MODELS.includes(msg.liveModel) ? (msg.liveModel as string) : undefined;
+          const liveModelsToTry = chosenLive ? [chosenLive, ...LIVE_MODELS.filter((m) => m !== chosenLive)] : LIVE_MODELS;
           for (const modelCandidate of liveModelsToTry) {
             try {
               liveSession = await ai!.live.connect({

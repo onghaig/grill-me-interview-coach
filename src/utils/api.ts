@@ -1,6 +1,6 @@
-export type Provider = 'gemini' | 'openai' | 'anthropic';
-export const PROVIDER_LABEL: Record<Provider, string> = { gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic' };
-export const DEFAULT_MODEL_HINT: Record<Exclude<Provider, 'gemini'>, string> = { openai: 'gpt-4.1', anthropic: 'claude-opus-5-5' };
+import { Provider, Job, LlmSettings, choiceFor, usedProviders, parseSettings } from './llmSettings';
+export type { Provider, Job, LlmSettings } from './llmSettings';
+export { PROVIDER_LABEL } from './llmSettings';
 
 const SETTINGS_STORE = 'br-llm';
 const keyStore = (p: Provider) => (p === 'gemini' ? 'br-gemini-key' : `br-key-${p}`);
@@ -37,29 +37,29 @@ export const getApiKey = (): string => getProviderKey('gemini');
 export const setApiKey = (key: string) => setProviderKey('gemini', key);
 export const clearApiKey = () => clearProviderKey('gemini');
 
-/** Which provider and model write questions and rubrics and grade interviews. */
-export function getLlmSettings(): { provider: Provider; model: string } {
+/** The saved model choices: a default, optional per-job overrides, and the Gemini voice model. */
+export function getSettings(): LlmSettings {
   try {
-    const raw = JSON.parse(read(SETTINGS_STORE) || '{}');
-    const provider: Provider = ['gemini', 'openai', 'anthropic'].includes(raw.provider) ? raw.provider : 'gemini';
-    return { provider, model: typeof raw.model === 'string' ? raw.model : '' };
+    return parseSettings(JSON.parse(read(SETTINGS_STORE) || '{}'));
   } catch {
-    return { provider: 'gemini', model: '' };
+    return parseSettings({});
   }
 }
-export const setLlmSettings = (s: { provider: Provider; model: string }) => write(SETTINGS_STORE, JSON.stringify(s));
+export const saveSettings = (s: LlmSettings) => write(SETTINGS_STORE, JSON.stringify(s));
 
-/** Everything needed to run an interview: a Gemini key, plus a key for the chosen provider if it is not Gemini. */
+/** Everything needed to run an interview: a Gemini key, plus a key for every provider the settings use. */
 export function isConfigured(): boolean {
-  const { provider } = getLlmSettings();
-  return !!getApiKey() && (provider === 'gemini' || !!getProviderKey(provider));
+  return usedProviders(getSettings()).every((p) => !!getProviderKey(p));
 }
 
-/** The text-provider choice, in the shape the live-interview WebSocket expects. */
+/** The text-provider choice for the live interview's text fallback, in the shape the WebSocket expects. */
 export function llmForSocket(): { provider: Provider; key?: string; model?: string } {
-  const { provider, model } = getLlmSettings();
+  const { provider, model } = getSettings().default;
   return { provider, key: provider === 'gemini' ? undefined : getProviderKey(provider), model: model || undefined };
 }
+
+/** The Gemini live model chosen for the spoken interview, if any. */
+export const voiceModelForSocket = (): string | undefined => getSettings().voiceModel || undefined;
 
 export class ApiError extends Error {
   status: number;
@@ -74,8 +74,8 @@ export class ApiError extends Error {
 interface ApiOptions {
   method?: string;
   body?: unknown;
-  /** Send the user's Gemini key with this request. */
-  withKey?: boolean;
+  /** Send the user's keys with this request, and use the model they chose for this job. */
+  withKey?: Job;
 }
 
 const AUTH_PATHS = ['/api/auth/login', '/api/auth/signup', '/api/auth/me'];
@@ -83,7 +83,7 @@ const AUTH_PATHS = ['/api/auth/login', '/api/auth/signup', '/api/auth/me'];
 export async function api<T = any>(path: string, opts: ApiOptions = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.withKey) {
-    const { provider, model } = getLlmSettings();
+    const { provider, model } = choiceFor(getSettings(), opts.withKey);
     headers['x-gemini-key'] = getApiKey();
     headers['x-llm-provider'] = provider;
     if (provider !== 'gemini') headers['x-llm-key'] = getProviderKey(provider);

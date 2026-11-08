@@ -13,6 +13,8 @@ Practice system design, low-level design, LeetCode-style and behavioral intervie
 - Bring your own API keys. Keys are stored only in the browser, sent with each request, and never stored or logged on the server.
   - The live voice interview always runs on Gemini, so a Gemini key is required (free from https://aistudio.google.com/apikey).
   - Question writing, rubrics, resume planning and grading can run on Gemini, OpenAI or Anthropic. Choose under Models and keys; optionally name a model (defaults: `gpt-4.1` for OpenAI, `claude-opus-5-5` for Anthropic).
+  - Advanced: give each job its own provider and model, for example Gemini for writing questions and Claude for grading. Each provider you use needs its own key, and a missing key only affects the jobs that use it.
+  - You can also pick which Gemini live model runs the spoken interview. The others are tried automatically if it is unavailable.
 - One live interview at a time per account. Starting a second one (another tab or device) is refused until the first ends.
 - Limits: resume text 15,000 characters, resume PDF 3 MB, text file 200 KB, principles 6,000 characters.
 

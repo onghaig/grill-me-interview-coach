@@ -9,7 +9,7 @@ import { ReviewScreen } from './components/ReviewScreen';
 import { BehavioralInterview } from './components/BehavioralInterview';
 import { downloadMarkdown, copyMarkdown } from './utils/exportMarkdown';
 import { SavedInterview, InterviewSummary, fetchHistory, fetchInterview, saveInterview, deleteInterview } from './utils/history';
-import { api, getApiKey, isConfigured, llmForSocket } from './utils/api';
+import { api, getApiKey, isConfigured, llmForSocket, voiceModelForSocket } from './utils/api';
 import { AuthScreen, AccountUser } from './components/AuthScreen';
 import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
@@ -343,6 +343,7 @@ export default function App() {
             voice: options.voice,
             apiKey: getApiKey(),
             llm: llmForSocket(),
+            liveModel: voiceModelForSocket(),
             pushToTalk: options.pushToTalk,
             kickoff: true,
           })
@@ -508,7 +509,7 @@ export default function App() {
     codeText: string;
     durationSeconds: number;
   }): Promise<ScorecardData> => {
-    return api<ScorecardData>('/api/grade', { body: payload, withKey: true });
+    return api<ScorecardData>('/api/grade', { body: payload, withKey: 'grading' });
   };
 
   // The record to export for the interview that just ended (latest saved copy, which includes the scorecard)

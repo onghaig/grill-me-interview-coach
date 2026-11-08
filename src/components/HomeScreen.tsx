@@ -103,7 +103,7 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
     setError(null);
     try {
       const data = await api<{ question: SystemDesignQuestion }>('/api/behavioral', {
-        withKey: true,
+        withKey: 'behavioral',
         body: {
           resumeText: resumeText.trim(),
           resumePdf: resumePdf ? { data: resumePdf.data, mimeType: 'application/pdf' } : undefined,
@@ -125,7 +125,7 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
     setIsGenerating(true);
     setError(null);
     try {
-      const data = await api<{ question: SystemDesignQuestion }>('/api/rubric', { withKey: true, body: { prompt: prompt.trim() } });
+      const data = await api<{ question: SystemDesignQuestion }>('/api/rubric', { withKey: 'questions', body: { prompt: prompt.trim() } });
       setGenerated(data.question as SystemDesignQuestion);
     } catch (err: any) {
       setError(err?.message || 'Something went wrong building the rubric.');
