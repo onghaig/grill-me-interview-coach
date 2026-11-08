@@ -329,6 +329,31 @@ ${categoryTemplate}
   }
 });
 
+// The opening turn is the one place the interviewer talks at length
+function kickoffInstruction(q: SystemDesignQuestion): string {
+  const kind =
+    q.type === "coding"
+      ? "coding interview"
+      : q.type === "low_level_design"
+      ? "low-level design interview"
+      : "system design interview";
+  const exampleLine =
+    q.type === "coding"
+      ? "Walk through one small example out loud (input and expected output), but do not hint at the approach."
+      : q.type === "low_level_design"
+      ? "Mention the main things the system has to do, in a sentence or two, without naming classes or patterns."
+      : "Mention the scale in plain spoken numbers, but do not propose any components.";
+  return `[START OF INTERVIEW] The candidate has just joined the call. Open the ${kind} like a real interviewer, in this order, as natural speech:
+1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
+2. In one sentence, explain the format: about thirty minutes, they can talk through their thinking, and they have a whiteboard and a code editor, and you can see both.
+3. Explain the problem in your own words, conversationally, like you're describing it to a colleague. Do not read it verbatim and do not use lists. ${exampleLine}
+4. Finish by inviting them to ask any clarifying questions before they start, and ask what they'd like to pin down first.
+This opening is the one exception to the short-turns rule: speak for roughly 20 to 40 seconds, but keep it flowing and friendly, and never reveal the solution.
+
+The problem (private reference, rephrase it naturally): ${q.title}. ${q.description}
+Scale or constraints: ${q.scale}`;
+}
+
 const server = http.createServer(app);
 
 // Setup WebSocket server for Gemini Live & Voice session
@@ -379,7 +404,7 @@ Latest Candidate Input:
 ${userPrompt}
 
 Remember:
-- Speak briefly: 1-3 sentences per turn. You are the interviewer, not a lecturer.
+- Speak briefly: 1-3 sentences per turn, unless this is the [START OF INTERVIEW] opening, which should be a friendly 20-40 second introduction. You are the interviewer, not a lecturer.
 - If candidate asked a question or shared ideas, respond directly and ask a probing follow-up.
 - If candidate updated the whiteboard diagram, refer to their drawn shapes and arrows naturally.
 - Never give away the design.
@@ -407,7 +432,7 @@ Interviewer Spoken Response:`;
       // Contextual fallback response if API key is not yet set
       let fallbackReply = "";
       if (isKickoff) {
-        fallbackReply = `Welcome to your system design interview. Today we are designing "${currentQuestion.title}". Let's start with clarifying requirements. What functional and non-functional requirements would you scope out first?`;
+        fallbackReply = `Hi, welcome, and thanks for joining. I'll be your interviewer today. We've got about thirty minutes, so feel free to think out loud, and use the whiteboard or the code editor, since I can see both. Today's problem is: ${currentQuestion.title}. ${currentQuestion.description.replace(/[*`#]/g, "")} Before you dive in, what questions do you have, or what would you like to pin down first?`;
       } else if (latestDiagramContext && !conversationHistory.some(c => c.text.includes('whiteboard') || c.text.includes('diagram'))) {
         fallbackReply = `Looking at your whiteboard diagram, I see your components laid out. Can you walk me through the end-to-end lifecycle of a request from the client?`;
       } else if (currentPhase.toLowerCase().includes('estimate')) {
@@ -606,7 +631,7 @@ Interviewer Spoken Response:`;
                   role: "user",
                   parts: [
                     {
-                      text: `Hello! I am ready to start my interview for "${currentQuestion.title}". Please welcome me briefly and ask me to begin with clarifying requirements.`,
+                      text: kickoffInstruction(currentQuestion),
                     },
                   ],
                 },
@@ -629,7 +654,7 @@ Interviewer Spoken Response:`;
 
           // Deliver opening prompt
           await generateInterviewerTurn(
-            `Hello! I am ready to start my interview for "${currentQuestion.title}".`,
+            kickoffInstruction(currentQuestion),
             true
           );
         }
