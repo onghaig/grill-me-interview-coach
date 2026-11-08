@@ -1,36 +1,40 @@
 import { SystemDesignQuestion, QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
+import { Markdown } from './Markdown';
 
 export function ProblemStatement({ question }: { question: SystemDesignQuestion }) {
   const type = question.type || 'system_design';
   const scaleLabel =
-    type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : 'Scale & traffic';
+    type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : 'Scale and traffic';
+  // The statement already lists constraints for coding questions, so skip the duplicate card
+  const showScale = !(type === 'coding' && /constraints/i.test(question.description));
   return (
-    <div className="w-full h-full overflow-y-auto bg-slate-950 p-8 select-text">
-      <div className="max-w-2xl mx-auto">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-indigo-500/40 text-indigo-300 bg-indigo-950/30">
+    <div className="w-full h-full overflow-y-auto bg-slate-950 select-text">
+      <article className="max-w-[44rem] mx-auto px-8 py-10">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded border border-slate-700 text-slate-300">
             {QUESTION_TYPE_LABELS[type]}
           </span>
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-400 bg-amber-950/30">
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded border border-slate-700 text-slate-400">
             {question.difficulty}
           </span>
         </div>
-        <h1 className="font-display text-3xl font-medium tracking-tight text-slate-50 text-balance">{question.title}</h1>
+        <h1 className="font-display text-[2rem] leading-tight font-medium tracking-tight text-slate-50 text-balance">
+          {question.title}
+        </h1>
 
-        <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mt-6 mb-1.5">
-          Problem
-        </h2>
-        <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">{question.description}</p>
+        <Markdown text={question.description} className="mt-6 text-[15px] leading-7 text-slate-300" />
 
-        <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mt-6 mb-1.5">
-          {scaleLabel}
-        </h2>
-        <p className="text-sm font-mono text-slate-300 leading-relaxed">{question.scale}</p>
+        {showScale && (
+          <section className="mt-8 rounded-lg border border-slate-800 bg-slate-900/60 px-5 py-4">
+            <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mb-2">{scaleLabel}</h2>
+            <Markdown text={question.scale} className="text-sm leading-6 text-slate-300" />
+          </section>
+        )}
 
-        <p className="text-xs text-slate-500 mt-8">
-          Ask the interviewer to clarify anything that is ambiguous. That is part of what is graded.
+        <p className="text-xs text-slate-500 mt-8 leading-relaxed">
+          Ask the interviewer about anything that is ambiguous. Clarifying questions are part of what gets graded.
         </p>
-      </div>
+      </article>
     </div>
   );
 }

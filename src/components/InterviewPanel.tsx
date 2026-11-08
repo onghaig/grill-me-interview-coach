@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { InterviewPhase, getPhases, TranscriptEntry } from '../types';
 import { InterviewerFace } from './InterviewerFace';
+import { Markdown } from './Markdown';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../../prompts/interviewer';
 
 interface InterviewPanelProps {
@@ -242,7 +243,7 @@ export function InterviewPanel({
               <span className="text-[10px] uppercase font-bold text-indigo-400 tracking-wider block mb-0.5">
                 Overview:
               </span>
-              <p className="text-slate-300 leading-relaxed">{currentQuestion.description}</p>
+              <Markdown text={currentQuestion.description} className="text-slate-300 leading-relaxed" />
             </div>
             <div>
               <span className="text-[10px] uppercase font-bold text-indigo-400 tracking-wider block mb-1">

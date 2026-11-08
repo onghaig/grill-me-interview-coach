@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, ShieldAlert, ListChecks, Radio, Mic, ChevronRight } from 'lucide-react';
+import { Markdown } from './Markdown';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS, QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
 
 export const VOICES = [
@@ -220,7 +221,7 @@ export function HomeScreen({ onStart }: HomeScreenProps) {
                 <span className="text-[11px] text-slate-500">{generated.scale}</span>
               </div>
               <h2 className="font-display text-2xl font-medium tracking-tight text-slate-50">{generated.title}</h2>
-              <p className="text-sm text-slate-300 mt-1">{generated.description}</p>
+              <Markdown text={generated.description} className="mt-3 text-sm leading-6 text-slate-300" />
             </div>
 
             {generated.rubric && (
