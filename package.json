@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:integration": "tsx scripts/integration-test.ts",
-    "test": "tsx --test src/utils/diagramSerializer.test.ts src/utils/micGate.test.ts src/utils/llmSettings.test.ts"
+    "test": "tsx --test src/utils/diagramSerializer.test.ts src/utils/micGate.test.ts src/utils/llmSettings.test.ts prompts/timing.test.ts prompts/interviewer.test.ts prompts/library.test.ts src/utils/pyHarness.test.ts server/resume.test.ts server/library.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",

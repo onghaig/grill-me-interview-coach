@@ -24,6 +24,17 @@ export function ProblemStatement({ question }: { question: SystemDesignQuestion 
 
         <Markdown text={question.description} className="mt-6 text-[15px] leading-7 text-slate-300" />
 
+        {question.diagramSvg && (
+          <figure className="mt-6 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+            {/* Shown through an image, so nothing inside the picture can run */}
+            <img
+              src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(question.diagramSvg)}`}
+              alt={`Diagram for ${question.title}`}
+              className="w-full max-h-64 object-contain"
+            />
+          </figure>
+        )}
+
         {showScale && (
           <section className="mt-8 rounded-lg border border-slate-800 bg-slate-900/60 px-5 py-4">
             <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mb-2">{scaleLabel}</h2>

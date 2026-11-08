@@ -23,7 +23,11 @@ import {
   AuthUser,
 } from "./server/auth.ts";
 import { registerInterviewRoutes } from "./server/interviews.ts";
+import { registerLibraryRoutes, cleanSvg, cleanCoding, EXTRA_CODING, EXTRA_DESIGN } from "./server/library.ts";
+import { registerLiveSessionRoutes, loadLiveSession } from "./server/liveSessions.ts";
+import { historyBlock, resumeInstruction, ResumeContext } from "./server/resume.ts";
 import { rateLimit } from "./server/limits.ts";
+import { Timing, DEFAULT_TIMING, normalizeTiming, timingPhrase, gradingTimingNote, timerMessage } from "./prompts/timing.ts";
 import { generate, extractJson, LlmConfig, LlmError, Provider, PROVIDERS, PROVIDER_LABEL, MODEL_NAME_RE } from "./server/llm.ts";
 
 dotenv.config();
@@ -52,6 +56,7 @@ app.use(sameOriginOnly);
 app.use(attachUser());
 registerAuthRoutes(app);
 registerInterviewRoutes(app);
+registerLiveSessionRoutes(app);
 
 /** Limits on what a user can send us. The same numbers are enforced in the browser. */
 const LIMITS = {
@@ -105,7 +110,7 @@ function llmFromRequest(req: express.Request, res: express.Response): LlmConfig 
   }
   return { provider, key, model };
 }
-const perUser = rateLimit({ max: 20, key: (r) => `gen:${r.user?.id || r.ip}` });
+const perUser = rateLimit({ max: Number(process.env.GEN_RATE_LIMIT_PER_MIN) || 20, key: (r) => `gen:${r.user?.id || r.ip}` });
 
 /** Turn a model-provider failure into something a user can act on, instead of a wall of JSON. */
 function sendLlmError(res: express.Response, what: string, err: any) {
@@ -234,7 +239,7 @@ function normalizeRubricQuestion(raw: any, userPrompt: string) {
     c.weight = i === cats.length - 1 ? 100 - acc : Math.round((c.weight / total) * 100);
     acc += c.weight;
   });
-  const difficulty = ["Medium", "Hard", "Very Hard"].includes(raw.difficulty) ? raw.difficulty : "Hard";
+  const difficulty = ["Easy", "Medium", "Hard", "Very Hard"].includes(raw.difficulty) ? raw.difficulty : "Hard";
   const type = ["system_design", "low_level_design", "coding", "behavioral"].includes(raw.type) ? raw.type : "system_design";
   return {
     id: "custom-" + Date.now(),
@@ -282,8 +287,43 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
   }
 });
 
+registerLibraryRoutes(app, {
+  llmFromRequest,
+  sendLlmError,
+  perUser,
+  generate: async (llm, entry) => {
+    const topic = entry.type === "coding" ? `a ${entry.difficulty} coding problem in the "${entry.topic}" category, in the spirit of the classic "${entry.title}"` : entry.title;
+    const userPrompt = `${topic}. Interview type: ${entry.type}.${entry.type === "coding" ? " Write an ORIGINAL problem statement (new wording and new example values) for the same underlying task." : ""}`;
+    const extra = entry.type === "coding" ? EXTRA_CODING : EXTRA_DESIGN;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const text = await generate(llm, { prompt: RUBRIC_PROMPT(userPrompt) + "\n" + extra, json: true });
+        const raw = extractJson(text);
+        const q: any = normalizeRubricQuestion(raw, entry.title);
+        q.id = "lib-" + entry.id;
+        q.libraryId = entry.id;
+        q.type = entry.type;
+        q.title = entry.title;
+        q.difficulty = entry.difficulty;
+        const diagram = cleanSvg(raw?.diagramSvg);
+        if (diagram) q.diagramSvg = diagram;
+        if (entry.type === "coding") {
+          const spec = cleanCoding(raw?.coding);
+          if (!spec) throw new Error("Model returned no coding details.");
+          q.coding = spec;
+        }
+        return q;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  },
+});
+
 const BEHAVIORAL_PROMPT = (opts: { resumeText: string; hasPdf: boolean; principles: string; role: string }) => `You are a hiring manager and bar raiser who runs behavioral interviews.
-Design a 30-minute behavioral interview for a candidate.
+Design a behavioral interview for a candidate. The length is chosen later, so order the questions by priority: the interviewer may not reach the last ones.
 
 ${opts.role ? `Role or company context from the candidate:\n"""\n${opts.role}\n"""\n` : ""}
 ${opts.principles ? `Leadership principles, values or business information the interview must assess:\n"""\n${opts.principles}\n"""\n` : "No principles were supplied, so assess common senior-engineer leadership competencies (ownership, dealing with ambiguity, conflict, influencing without authority, raising the bar, delivering results, learning from failure).\n"}
@@ -292,7 +332,7 @@ Output ONLY valid JSON:
 {
   "title": "Behavioral interview: short role/company or theme, e.g. Behavioral interview: Senior Engineer at Acme",
   "difficulty": "Medium" | "Hard",
-  "scale": "e.g. About 30 minutes, 6 to 8 stories",
+  "scale": "e.g. 7 to 8 questions",
   "description": "Markdown. 2 sentences on what this interview covers, then a '**Focus areas**' line followed by a bullet list of the competencies or principles that will be assessed. Do NOT list the questions.",
   "candidateSummary": "PRIVATE. 3-5 sentences summarising the candidate's background from the resume: roles, years, notable projects with any numbers, seniority. Only facts in the resume. Empty string if no resume.",
   "plannedQuestions": [
@@ -408,7 +448,7 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
         question.plannedQuestions = planned;
         const summary = String(raw.candidateSummary || "").trim();
         if (summary) question.questionNotes = `Candidate background (from the resume): ${summary}\n\n${question.questionNotes}`;
-        question.scale = String(raw.scale || "About 30 minutes, 6 to 8 stories");
+        question.scale = String(raw.scale || "7 to 8 questions");
         return res.json({ question });
       } catch (err) {
         lastErr = err;
@@ -426,6 +466,7 @@ app.post("/api/grade", requireAuth, perUser, async (req, res) => {
     const llm = llmFromRequest(req, res);
     if (!llm) return;
     const { question, transcript, diagramText, codeText, durationSeconds } = req.body;
+    const gradeTiming = normalizeTiming(req.body?.timing);
     const qType: string = question?.type || "system_design";
     const roleLine =
       qType === "behavioral"
@@ -521,7 +562,7 @@ In your feedback, say which must-cover topics were hit or missed and call out an
     const gradingPrompt = `You are ${roleLine}. Grade this ${kind} interview strictly on evidence.
 
 QUESTION: ${question?.title || "Interview question"}
-${question?.scale ? `Scope: ${question.scale}\n` : ""}${question?.description ? `${question.description}\n` : ""}${rubricBlock}Duration: ${Math.round((durationSeconds || 0) / 60)} minutes.
+${question?.scale ? `Scope: ${question.scale}\n` : ""}${question?.description ? `${question.description}\n` : ""}${rubricBlock}Duration: ${Math.round((durationSeconds || 0) / 60)} minutes. ${gradingTimingNote(gradeTiming)}
 ${typeNote}
 ${showDiagram ? `\nWHITEBOARD (text serialization of the final diagram):\n${diagramText}\n` : ""}${showCode ? `\nFINAL CODE:\n${codeText}\n` : ""}
 TRANSCRIPT:
@@ -566,12 +607,13 @@ ${categoryTemplate}
 });
 
 // The opening turn is the one place the interviewer talks at length
-function kickoffInstruction(q: SystemDesignQuestion): string {
+function kickoffInstruction(q: SystemDesignQuestion, timing: Timing = DEFAULT_TIMING): string {
+  const length = timingPhrase(timing);
   if (q.type === "behavioral") {
     const first = q.plannedQuestions?.[0];
     return `[START OF INTERVIEW] The candidate has just joined the call. Open the behavioral interview like a real interviewer, in this order, as natural speech:
 1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
-2. In one or two sentences, explain the format: about thirty minutes, a conversation about their past experience, you'll ask for specific examples, and it's fine to take a moment to think.
+2. In one or two sentences, explain the format: ${length}, a conversation about their past experience, you'll ask for specific examples, and it's fine to take a moment to think.
 3. If the private notes contain a candidate background, say naturally that you've had a look at their background and mention one concrete thing from it. Do not recite their resume.
 4. Then ask exactly this FIRST question, in natural spoken words but keeping its meaning and every specific in it (company, project, numbers), and stop. Do not substitute a different question. ${first ? `First question: "${first.question}"${first.anchor ? ` (based on: ${first.anchor})` : ""}` : "Ask a friendly warm-up about their current role and background."}
 
@@ -599,7 +641,7 @@ Interview focus (private reference): ${q.title}. ${q.description}`;
       : "Mention the scale in plain spoken numbers, but do not propose any components.";
   return `[START OF INTERVIEW] The candidate has just joined the call. Open the ${kind} like a real interviewer, in this order, as natural speech:
 1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
-2. In one sentence, explain the format: about thirty minutes, they can talk through their thinking, and they have a whiteboard and a code editor, and you can see both.
+2. In one sentence, explain the format: ${length}, they can talk through their thinking, and they have a whiteboard and a code editor, and you can see both.
 3. Explain the problem in your own words, conversationally, like you're describing it to a colleague. Do not read it verbatim and do not use lists. ${exampleLine}
 4. Finish by inviting them to ask any clarifying questions before they start, and ask what they'd like to pin down first.
 This opening is the one exception to the short-turns rule: speak for roughly 20 to 40 seconds, but keep it flowing and friendly, and never reveal the solution.
@@ -640,6 +682,7 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   let latestDiagramContext = "";
   let currentPhase = "Clarify requirements";
   let pushToTalk = false;
+  let timing: Timing = DEFAULT_TIMING;
   let sessionGen = 0;
   let latestCodeContext = "";
 
@@ -696,7 +739,7 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   // Helper to generate a conversational turn using Gemini 3.8 Flash
   const generateInterviewerTurn = async (userPrompt: string, isKickoff = false, isEvent = false) => {
     try {
-      const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
+      const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing);
       const coachGuidance = coachNotes.length
         ? `\nPrivate guidance from the evaluator. Act on it in your own words at this turn. Never quote it, never mention an evaluator or coach:\n${coachNotes.map((n) => `- ${n}`).join('\n')}\n`
         : '';
@@ -744,7 +787,7 @@ Interviewer Spoken Response:`;
       // Contextual fallback response if API key is not yet set
       let fallbackReply = "";
       if (isKickoff) {
-        fallbackReply = `Hi, welcome, and thanks for joining. I'll be your interviewer today. We've got about thirty minutes, so feel free to think out loud, and use the whiteboard or the code editor, since I can see both. Today's problem is: ${currentQuestion.title}. ${currentQuestion.description.replace(/[*`#]/g, "")} Before you dive in, what questions do you have, or what would you like to pin down first?`;
+        fallbackReply = `Hi, welcome, and thanks for joining. I'll be your interviewer today. We've got ${timing.mode === "practice" ? "no time limit, so take as long as you need, and" : timingPhrase(timing) + ", so"} feel free to think out loud, and use the whiteboard or the code editor, since I can see both. Today's problem is: ${currentQuestion.title}. ${currentQuestion.description.replace(/[*`#]/g, "")} Before you dive in, what questions do you have, or what would you like to pin down first?`;
       } else if (latestDiagramContext && !conversationHistory.some(c => c.text.includes('whiteboard') || c.text.includes('diagram'))) {
         fallbackReply = `Looking at your whiteboard diagram, I see your components laid out. Can you walk me through the end-to-end lifecycle of a request from the client?`;
       } else if (currentPhase.toLowerCase().includes('estimate')) {
@@ -791,6 +834,7 @@ Interviewer Spoken Response:`;
         await cleanupSession();
 
         pushToTalk = !!msg.pushToTalk;
+        timing = normalizeTiming(msg.timing);
 
         const key = typeof msg.apiKey === "string" ? msg.apiKey.trim() : "";
         if (!validKey(key)) {
@@ -850,11 +894,42 @@ Interviewer Spoken Response:`;
           };
         }
 
-        const systemInstruction = getInterviewerSystemInstruction(currentQuestion);
+        // Rejoining a saved interview: rebuild from what the server saved, not from what the browser sends
+        let resume: ResumeContext | null = null;
+        if (typeof msg.resumeSessionId === "string") {
+          const saved = await loadLiveSession(user.id, msg.resumeSessionId);
+          const d: any = saved?.data;
+          if (saved && d && d.question && Array.isArray(d.transcript) && d.transcript.length > 0) {
+            currentQuestion = d.question as SystemDesignQuestion;
+            timing = normalizeTiming(d.timing);
+            currentPhase = String(d.phaseLabel || currentPhase);
+            latestCodeContext = String(d.code || "");
+            latestDiagramContext = String(d.diagramText || "");
+            // The interviewer is about to be given these snapshots, so do not send them again right away
+            if (latestCodeContext) lastContext.code = { sent: latestCodeContext, at: Date.now() };
+            if (latestDiagramContext) lastContext.diagram = { sent: latestDiagramContext, at: Date.now() };
+            resume = {
+              transcript: d.transcript,
+              code: latestCodeContext,
+              codeLanguage: String(d.codeLanguage || "Python"),
+              diagramText: latestDiagramContext,
+              elapsedSeconds: Number(d.elapsedSeconds) || 0,
+              timing,
+              minutesAway: Math.round((Date.now() - saved.updatedAt) / 60000),
+            };
+          }
+        }
+
+        // The earlier conversation goes into the standing instructions, not into replayed turns. Replayed text turns
+        // from the "model" side make the voice model carry on in text, which the browser then reads in a robotic voice.
+        const systemInstruction = getInterviewerSystemInstruction(currentQuestion, timing) + (resume ? historyBlock(resume) : "");
+
+        // Text-only interviews never open the voice connection
+        const textOnly = msg.voiceAgent === false;
 
         // Try connecting via Gemini Live API first
         let liveConnected = false;
-        {
+        if (!textOnly) {
           // Attempt Live API connection
           // The user may pick the live model; it is tried first, then the others as fallbacks
           const LIVE_MODELS = ["gemini-3.1-flash-live-preview", "gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"];
@@ -879,12 +954,9 @@ Interviewer Spoken Response:`;
                   systemInstruction,
                   inputAudioTranscription: {},
                   outputAudioTranscription: {},
-                  realtimeInputConfig: pushToTalk
-                    ? {
-                        // Push-to-talk: the client marks the start/end of each turn explicitly.
-                        automaticActivityDetection: { disabled: true },
-                      }
-                    : {
+                  // Push-to-talk is handled by the client (it only sends audio while the key is held), so the user can
+                  // switch between push-to-talk and hands-free at any moment without reconnecting.
+                  realtimeInputConfig: {
                         automaticActivityDetection: {
                           // Less eager to decide that background noise or echo is the candidate talking, which is
                           // what makes the interviewer stop mid-sentence. The padding keeps the first syllable.
@@ -893,7 +965,7 @@ Interviewer Spoken Response:`;
                           endOfSpeechSensitivity: "END_SENSITIVITY_LOW" as any,
                           silenceDurationMs: 1400,
                         },
-                      },
+                  },
                 },
                 callbacks: {
                   onopen: () => {
@@ -992,14 +1064,20 @@ Interviewer Spoken Response:`;
         if (liveConnected && liveSession) {
           isConnected = true;
           sessionMode = "live_socket";
-          if (msg.kickoff !== false) {
+          if (resume) {
+            // Give the new voice session the earlier conversation as text, then ask it to welcome the candidate back
+            liveSession.sendClientContent({
+              turns: [{ role: "user", parts: [{ text: resumeInstruction(resume, resume.transcript.length > 0 && resume.transcript[resume.transcript.length - 1].role === "user") }] }],
+              turnComplete: true,
+            });
+          } else if (msg.kickoff !== false) {
             liveSession.sendClientContent({
               turns: [
                 {
                   role: "user",
                   parts: [
                     {
-                      text: kickoffInstruction(currentQuestion),
+                      text: kickoffInstruction(currentQuestion, timing),
                     },
                   ],
                 },
@@ -1020,11 +1098,14 @@ Interviewer Spoken Response:`;
             })
           );
 
-          // Deliver opening prompt
-          await generateInterviewerTurn(
-            kickoffInstruction(currentQuestion),
-            true
-          );
+          if (resume) {
+            conversationHistory = resume.transcript.map((t) => ({ role: t.role === "user" ? ("user" as const) : ("model" as const), text: String(t.text || "") }));
+            const unanswered = conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === "user";
+            await generateInterviewerTurn(resumeInstruction(resume, unanswered), false, true);
+          } else {
+            // Deliver opening prompt
+            await generateInterviewerTurn(kickoffInstruction(currentQuestion, timing), true);
+          }
         }
       } else if (msg.type === "audio") {
         if (liveSession && sessionMode === "live_socket" && isConnected) {
@@ -1037,16 +1118,31 @@ Interviewer Spoken Response:`;
         }
       } else if (msg.type === "audio_end") {
         // The client stopped sending audio because the mic went quiet; flush anything the model has buffered
-        if (liveSession && sessionMode === "live_socket" && isConnected && !pushToTalk) {
+        if (liveSession && sessionMode === "live_socket" && isConnected) {
           liveSession.sendRealtimeInput({ audioStreamEnd: true });
         }
       } else if (msg.type === "ptt_start") {
-        if (liveSession && sessionMode === "live_socket" && isConnected && pushToTalk) {
-          liveSession.sendRealtimeInput({ activityStart: {} });
-        }
+        // Nothing to tell the model: it hears the audio the client starts sending
       } else if (msg.type === "ptt_end") {
-        if (liveSession && sessionMode === "live_socket" && isConnected && pushToTalk) {
-          liveSession.sendRealtimeInput({ activityEnd: {} });
+        if (liveSession && sessionMode === "live_socket" && isConnected) {
+          liveSession.sendRealtimeInput({ audioStreamEnd: true });
+        }
+      } else if (msg.type === "switch_mode") {
+        // Drop the voice connection and carry on as a text chat, from the history the browser sends
+        if (msg.mode === "text" && sessionMode === "live_socket" && isConnected) {
+          const hist = Array.isArray(msg.history) ? msg.history.slice(-24) : [];
+          sessionGen++; // our own close is not an unexpected drop
+          try {
+            await liveSession?.close();
+          } catch {}
+          liveSession = null;
+          sessionMode = "conversational_engine";
+          conversationHistory = hist
+            .map((t: any) => ({ role: t?.role === "user" ? ("user" as const) : ("model" as const), text: String(t?.text || "").slice(0, 1200) }))
+            .filter((t: any) => t.text);
+          if (latestCodeContext) conversationHistory.push({ role: "note", text: `[CODE UPDATE]\n${latestCodeContext}` });
+          if (latestDiagramContext) conversationHistory.push({ role: "note", text: `[DIAGRAM UPDATE]\n${latestDiagramContext}` });
+          sendJson({ type: "status", status: "connected", mode: "conversational_engine", message: "Switched to text chat" });
         }
       } else if (msg.type === "code") {
         latestCodeContext = String(msg.text || "").slice(0, 12000);
@@ -1068,6 +1164,14 @@ Interviewer Spoken Response:`;
         } else if (sessionMode === "conversational_engine" && isConnected) {
           // Held for the next turn, same as the live path: no immediate reply and not logged as candidate speech
           coachNotes.push(String(msg.text));
+        }
+      } else if (msg.type === "time_check") {
+        // Silent reminders near the end of a timed interview. Practice mode has no clock, so nothing is sent.
+        const note = timing.mode === "timed" ? timerMessage(Number(msg.remainingSeconds)) : null;
+        if (note && liveSession && sessionMode === "live_socket" && isConnected) {
+          liveSession.sendClientContent({ turns: [{ role: "user", parts: [{ text: note }] }], turnComplete: false });
+        } else if (note && sessionMode === "conversational_engine" && isConnected) {
+          conversationHistory.push({ role: "note", text: note });
         }
       } else if (msg.type === "phase_advance") {
         currentPhase = msg.label || msg.phase;

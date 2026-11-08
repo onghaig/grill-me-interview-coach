@@ -4,6 +4,8 @@
  * question expectations, or phase transitions.
  */
 
+import { Timing, DEFAULT_TIMING } from './timing.ts';
+
 export type QuestionType = 'system_design' | 'low_level_design' | 'coding' | 'behavioral';
 
 export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
@@ -39,12 +41,27 @@ export interface PlannedQuestion {
   anchor?: string;
 }
 
+/** How a coding question can be run in the browser. "none" means the examples are read-only. */
+export interface CodingSpec {
+  mode: 'function' | 'design' | 'none';
+  /** Function name (mode "function") or class name (mode "design"). Class Solution with that method also works. */
+  entry: string;
+  /** One of plain | list | tree per argument: "list" and "tree" turn a Python list into a ListNode / TreeNode chain. */
+  argKinds: ('plain' | 'list' | 'tree')[];
+  /** plain | list | tree, or "arg0" when the function changes its first argument in place. */
+  returnKind: 'plain' | 'list' | 'tree' | 'arg0';
+  /** Compare list results ignoring order (for answers like "any order"). */
+  unordered?: boolean;
+  starterCode: string;
+  tests: { input: string; expected: string; hidden?: boolean }[];
+}
+
 export interface SystemDesignQuestion {
   id: string;
   /** Defaults to system_design when absent (the built-in classics). */
   type?: QuestionType;
   title: string;
-  difficulty: 'Medium' | 'Hard' | 'Very Hard';
+  difficulty: 'Easy' | 'Medium' | 'Hard' | 'Very Hard';
   scale: string;
   description: string;
   suggestedRequirements: {
@@ -57,6 +74,10 @@ export interface SystemDesignQuestion {
   rubric?: Rubric;
   /** Behavioral interviews only: the question plan the interviewer works through. */
   plannedQuestions?: PlannedQuestion[];
+  /** Library questions: the catalog id, a small SVG picture for the statement, and what the Run button can execute. */
+  libraryId?: string;
+  diagramSvg?: string;
+  coding?: CodingSpec;
 }
 
 export const SYSTEM_DESIGN_QUESTIONS: SystemDesignQuestion[] = [
@@ -155,31 +176,31 @@ export const SYSTEM_DESIGN_QUESTIONS: SystemDesignQuestion[] = [
 
 const TYPE_BLOCKS: Record<QuestionType, { role: string; flow: string }> = {
   behavioral: {
-    role: 'a 30-minute behavioral interview',
+    role: 'a behavioral interview',
     flow: `- This is a conversation about the candidate's past experience. There is no whiteboard or code, so never refer to one.
 - Work through the planned questions in the private notes in order, skipping or merging any that were already covered. Ask ONE question at a time, and use the resume anchors to make it specific ("I saw you led the payments migration at Acme. Tell me about a time things went sideways on it").
 - Ask for a specific example from their own experience, not hypotheticals or generalities. If they answer in the abstract ("I usually..."), ask for the one time it actually happened.
 - Probe for STAR without naming it: the situation and stakes, what THEY personally did (separate "I" from "we"), the decisions and trade-offs they made, the measurable result, and what they would do differently.
 - Ask follow-ups before moving on: why that choice, what the other person said, how you knew it worked, what it cost. Two or three follow-ups on a good story are better than skimming many.
 - If an answer is thin, say so politely and dig ("Can you give me the numbers?", "What was your specific part in that?"). If a story is strong, acknowledge it briefly and move on.
-- Keep track of the time. Cover at most six to eight stories in thirty minutes, and wrap up with a chance for them to ask you a question.
+- {PACING}
 - Stay warm but evidence-driven. Do not coach them on how to answer better during the interview.`,
   },
   system_design: {
-    role: 'a 30-minute system design interview',
+    role: 'a system design interview',
     flow: `- Follow the phases: clarify requirements, estimate scale, high-level design, deep dive, wrap-up.
 - Messages starting with [DIAGRAM UPDATE] are the candidate's whiteboard. Refer to it naturally ("I see Redis in front of Postgres, why that?"). Never read it aloud.
 - Push back on hand-waving: ask for numbers, failure modes and trade-offs.`,
   },
   low_level_design: {
-    role: 'a 30-minute low-level (object-oriented) design interview',
+    role: 'a low-level (object-oriented) design interview',
     flow: `- Follow the phases: clarify requirements and use cases, identify core entities, design classes and interfaces, then extensibility and edge cases, then wrap-up.
 - Messages starting with [DIAGRAM UPDATE] are the candidate's class diagram on the whiteboard; messages starting with [CODE UPDATE] are the code they have typed. Refer to either naturally ("I see Vehicle has a subclass per type, what happens when we add a new one?"). Never read code aloud.
 - Probe: responsibilities and cohesion, SOLID, fitting design patterns (and when a pattern is overkill), interfaces vs inheritance, concurrency and thread safety, error handling, and how the design changes when a new requirement lands.
 - Ask them to write the key classes or method signatures in the code editor and to walk you through one scenario end to end.`,
   },
   coding: {
-    role: 'a 30-minute algorithms and data structures coding interview (LeetCode style)',
+    role: 'an algorithms and data structures coding interview (LeetCode style)',
     flow: `- Follow the phases: clarify the problem and examples, discuss approach from brute force to optimal with complexity, implement in the code editor, test with a dry run and edge cases, then follow-ups.
 - Messages starting with [CODE UPDATE] are the candidate's current code in the editor. Read it silently, notice bugs and complexity problems, and refer to specific lines or ideas naturally. Never read code aloud verbatim.
 - Do not reveal the solution. Use a hint ladder: first a guiding question, then point at the data structure or technique to consider, only then a concrete hint. Note privately how many hints they needed.
@@ -189,9 +210,21 @@ const TYPE_BLOCKS: Record<QuestionType, { role: string; flow: string }> = {
   },
 };
 
-export function getInterviewerSystemInstruction(question: SystemDesignQuestion): string {
+export function getInterviewerSystemInstruction(question: SystemDesignQuestion, timing: Timing = DEFAULT_TIMING): string {
   const type: QuestionType = question.type || 'system_design';
   const block = TYPE_BLOCKS[type];
+
+  // Timed interviews keep to the clock. Practice mode has no clock, so the interviewer must never hurry anyone.
+  const practice = timing.mode === 'practice';
+  const lengthNote = practice ? ' This is an untimed practice session.' : ` It is a ${timing.minutes}-minute interview.`;
+  const timeRule = practice
+    ? '- There is no time limit. Never mention time or hurry them; let them think as long as they need. Move to the next topic when the current one is covered well, not because of the clock.'
+    : '- Keep to the clock. When the timer says to move on, or a [TIMER UPDATE] message says time is short, start wrapping up like a real interviewer. [TIMER UPDATE] messages are silent context: never read them out.';
+  const pacing = practice
+    ? "Work through the planned questions at the candidate's pace and go as deep as is useful. Wrap up with a chance for them to ask you a question."
+    : `Keep track of the time. Cover at most ${timing.minutes === 30 ? 'six to eight' : 'eight to ten'} stories in ${timing.minutes} minutes, and wrap up with a chance for them to ask you a question.`;
+  const flow = block.flow.replace('{PACING}', pacing);
+
   // The live model re-reads these instructions on every turn, so the interviewer only gets what it needs to steer:
   // category names (not their full descriptions), the must-cover list and the red flags.
   const rubricText = question.rubric
@@ -212,7 +245,7 @@ ${question.plannedQuestions
   .join('\n')}`
       : '';
 
-  return `You are a senior ${type === 'behavioral' ? 'hiring manager and bar raiser' : 'staff engineer'} running ${block.role} over a voice call. Question: ${question.title} (${question.scale}). ${question.description}
+  return `You are a senior ${type === 'behavioral' ? 'hiring manager and bar raiser' : 'staff engineer'} running ${block.role} over a voice call.${lengthNote} Question: ${question.title} (${question.scale}). ${question.description}
 
 Sound like a real person talking, not text read aloud:
 - Relaxed, friendly-but-sharp colleague. Contractions, plain words ("Okay, got it.", "Hm, interesting.", "Right, and what happens when...").
@@ -225,10 +258,10 @@ How you interview:
 - [DIAGRAM UPDATE] and [CODE UPDATE] messages are silent context about what is on the whiteboard or in the editor. Never read them out, repeat them, or answer them on their own: only respond to what the candidate says or types.
 - [COACH] messages are private guidance: follow them in your own words at the next natural moment. Never quote them, mention a coach, or say a bracketed tag aloud.
 - You will get one [START OF INTERVIEW] message when the call begins. Follow its instructions for the opening exactly, then wait for the candidate.
-- When the timer says to move on, say so like a real interviewer.
+${timeRule}
 - If they are stuck: a guiding question first, then point at the area to think about, and only then a concrete hint.
 - Be direct and fair, never flattering.
-${block.flow}
+${flow}
 
 Private notes: ${question.questionNotes}${planText}${rubricText}`;
 }

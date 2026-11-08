@@ -1,7 +1,10 @@
+import { LibraryBrowser } from './LibraryBrowser';
 import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { InterviewSummary } from '../utils/history';
+import { LiveSessionSummary } from '../utils/liveSessions';
+import { Timing, DEFAULT_TIMING, TIMING_OPTIONS, normalizeTiming, timingId } from '../../prompts/timing';
 import { api } from '../utils/api';
 import { LIMITS } from '../utils/limits';
 import type { AccountUser } from './AuthScreen';
@@ -20,15 +23,32 @@ export const VOICES = [
 export interface StartOptions {
   pushToTalk: boolean;
   voice: string;
+  timing: Timing;
+  /** False for a text chat: no voice connection, which also uses far fewer tokens. */
+  voiceAgent: boolean;
 }
 
 interface HomeScreenProps {
   onStart: (question: SystemDesignQuestion, options: StartOptions) => void;
   history: InterviewSummary[];
+  /** Interviews that were paused or interrupted and can be rejoined. */
+  liveSessions: LiveSessionSummary[];
+  onResumeSession: (id: string) => void;
+  onDiscardSession: (id: string) => void;
   user: AccountUser | null;
   onSignOut: () => void;
   onChangeKey: () => void;
   onOpenInterview: (id: string) => void;
+}
+
+function timeAgo(ms: number): string {
+  const mins = Math.floor((Date.now() - ms) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? 'day' : 'days'} ago`;
 }
 
 const AMAZON_PRINCIPLES =
@@ -43,13 +63,32 @@ const EXAMPLES = [
   'Merge k sorted lists',
 ];
 
-export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onOpenInterview }: HomeScreenProps) {
+export function HomeScreen({ onStart, history, liveSessions, onResumeSession, onDiscardSession, user, onSignOut, onChangeKey, onOpenInterview }: HomeScreenProps) {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [generated, setGenerated] = useState<SystemDesignQuestion | null>(null);
   const [pushToTalk, setPushToTalk] = useState(false);
+  const [voiceAgent, setVoiceAgent] = useState(true);
+  const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
   const [voice, setVoice] = useState(VOICES[0].id);
+  // The last timing choice is remembered between visits
+  const [timing, setTiming] = useState<Timing>(() => {
+    try {
+      return normalizeTiming(JSON.parse(localStorage.getItem('br-timing') || 'null'));
+    } catch {
+      return DEFAULT_TIMING;
+    }
+  });
+  const chooseTiming = (id: string) => {
+    const next = TIMING_OPTIONS.find((o) => o.id === id)?.timing ?? DEFAULT_TIMING;
+    setTiming(next);
+    try {
+      localStorage.setItem('br-timing', JSON.stringify(next));
+    } catch {
+      /* the choice just will not be remembered */
+    }
+  };
 
   const [mode, setMode] = useState<'technical' | 'behavioral'>('technical');
   const [resumeText, setResumeText] = useState('');
@@ -134,10 +173,37 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
     }
   };
 
-  const options: StartOptions = { pushToTalk, voice };
+  const options: StartOptions = { pushToTalk, voice, timing, voiceAgent };
 
   const optionsBar = (
     <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs text-slate-400 flex items-center gap-2" htmlFor="timing-choice">
+                Timing
+                <select
+                  id="timing-choice"
+                  value={timingId(timing)}
+                  onChange={(e) => chooseTiming(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
+                >
+                  {TIMING_OPTIONS.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label} ({o.detail})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400 flex items-center gap-2">
+                Interviewer
+                <select
+                  value={voiceAgent ? 'voice' : 'text'}
+                  onChange={(e) => setVoiceAgent(e.target.value === 'voice')}
+                  className="bg-slate-800 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
+                >
+                  <option value="voice">Voice conversation</option>
+                  <option value="text">Text chat (uses fewer tokens)</option>
+                </select>
+              </label>
+              {voiceAgent && (
               <label className="text-xs text-slate-400 flex items-center gap-2">
                 Voice
                 <select
@@ -152,6 +218,8 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
                   ))}
                 </select>
               </label>
+              )}
+              {voiceAgent && (
               <button
                 onClick={() => setPushToTalk(!pushToTalk)}
                 className={`py-1.5 px-3 rounded-md border text-xs font-semibold flex items-center gap-1.5 transition ${
@@ -163,6 +231,7 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
                 {pushToTalk ? <Radio className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
                 {pushToTalk ? 'Push-to-talk (hold Space)' : 'Hands-free'}
               </button>
+              )}
     </div>
   );
 
@@ -218,6 +287,58 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
 
         {!generated ? (
           <>
+            {liveSessions.length > 0 && (
+              <section className="mb-8" aria-label="Interviews in progress">
+                <h2 className="text-xs font-mono uppercase tracking-wider text-slate-500 mb-3">
+                  In progress
+                  <span className="ml-2 normal-case tracking-normal text-slate-600">pick up where you left off</span>
+                </h2>
+                <ul className="divide-y divide-slate-800 rounded-lg border border-indigo-900/60 bg-slate-900/50">
+                  {liveSessions.map((s) => (
+                    <li key={s.id} className="px-4 py-3 flex items-center justify-between gap-4">
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium truncate">{s.title}</span>
+                        <span className="block text-[11px] text-slate-500 mt-0.5">
+                          {s.status === 'paused' ? 'Paused' : 'Interrupted'} · {s.turns} {s.turns === 1 ? 'turn' : 'turns'} ·{' '}
+                          {Math.max(1, Math.round(s.elapsedSeconds / 60))} min in · saved {timeAgo(s.updatedAt)}
+                        </span>
+                      </span>
+                      <span className="shrink-0 flex items-center gap-3 text-xs">
+                        {confirmDiscard === s.id ? (
+                          <>
+                            <span className="text-slate-400">Discard this interview?</span>
+                            <button
+                              onClick={() => {
+                                setConfirmDiscard(null);
+                                onDiscardSession(s.id);
+                              }}
+                              className="text-rose-400 hover:text-rose-300 font-medium"
+                            >
+                              Discard
+                            </button>
+                            <button onClick={() => setConfirmDiscard(null)} className="text-slate-400 hover:text-slate-200">
+                              Keep
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => setConfirmDiscard(s.id)} className="text-slate-500 hover:text-rose-400">
+                              Discard
+                            </button>
+                            <button
+                              onClick={() => onResumeSession(s.id)}
+                              className="px-3.5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                            >
+                              Resume
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900 p-1 mb-4" role="tablist">
               {(['technical', 'behavioral'] as const).map((m) => (
                 <button
@@ -425,6 +546,8 @@ export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onO
                 </button>
               ))}
             </div>
+            <h2 className="text-xs font-mono uppercase tracking-wider text-slate-500 mt-10 mb-3">Question library</h2>
+            <LibraryBrowser onPick={(q) => onStart(q, options)} />
 
               </>
             ) : (

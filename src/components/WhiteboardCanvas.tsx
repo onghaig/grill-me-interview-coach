@@ -4,13 +4,17 @@ import { serializeDiagram, ExcalidrawSimpleElement } from '../utils/diagramSeria
 import { Layers, RefreshCw, Sparkles, Trash2, Eye, EyeOff } from 'lucide-react';
 
 interface WhiteboardCanvasProps {
+  /** A saved drawing to start from when rejoining an interview. Only read when the board first appears. */
+  initialElements?: any[];
+  /** Called on every change with the current (non-deleted) elements, so the drawing can be saved. */
+  onSceneChange?: (elements: any[]) => void;
   /** Filled with a function that renders the board to a PNG data URL (null when the board is empty). */
   captureRef?: React.MutableRefObject<(() => Promise<string | null>) | null>;
   onDiagramUpdate: (serializedText: string) => void;
   latestSerializedText: string;
 }
 
-export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captureRef }: WhiteboardCanvasProps) {
+export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captureRef, initialElements, onSceneChange }: WhiteboardCanvasProps) {
   const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
 
   useEffect(() => {
@@ -62,6 +66,7 @@ export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captur
 
   const handleChange = useCallback(
     (elements: readonly any[]) => {
+      onSceneChange?.(elements.filter((e) => !e.isDeleted));
       setSyncStatus('pending');
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
@@ -72,7 +77,7 @@ export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captur
         processDiagram(elements);
       }, 3000);
     },
-    [processDiagram]
+    [processDiagram, onSceneChange]
   );
 
   useEffect(() => {
@@ -366,6 +371,7 @@ export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captur
       <div className="flex-1 w-full h-[calc(100%-48px)] relative overflow-hidden">
         <Excalidraw
           excalidrawAPI={(api) => setExcalidrawAPI(api)}
+          initialData={initialElements && initialElements.length ? { elements: initialElements } : undefined}
           onChange={handleChange}
           theme="dark"
           UIOptions={{

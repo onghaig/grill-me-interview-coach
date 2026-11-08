@@ -13,15 +13,31 @@ import { api, getApiKey, isConfigured, llmForSocket, voiceModelForSocket } from 
 import { AuthScreen, AccountUser } from './components/AuthScreen';
 import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
-import { MicGate } from './utils/micGate';
+import { MicGate, gateOptionsForSensitivity } from './utils/micGate';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
+import { Timing, DEFAULT_TIMING, timeLimitSeconds, normalizeTiming } from '../prompts/timing';
+import {
+  LiveSessionSummary,
+  LiveSessionPayload,
+  fetchLiveSessions,
+  fetchLiveSession,
+  saveLiveSession,
+  deleteLiveSession,
+  beaconLiveSession,
+} from './utils/liveSessions';
 
 export default function App() {
   const [currentQuestion, setCurrentQuestion] = useState<SystemDesignQuestion>(SYSTEM_DESIGN_QUESTIONS[0]);
   const [currentPhase, setCurrentPhase] = useState<InterviewPhase>('clarify');
   const [isInterviewActive, setIsInterviewActive] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  // A ref as well, so a delayed retry sees the current value instead of a stale one
+  const connectingRef = useRef(false);
+  const setConnecting = (v: boolean) => {
+    connectingRef.current = v;
+    setIsConnecting(v);
+  };
   const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);
   const [isPushToTalk, setIsPushToTalk] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
@@ -34,16 +50,55 @@ export default function App() {
   const [reviewRecord, setReviewRecord] = useState<SavedInterview | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const recordRef = useRef<SavedInterview | null>(null);
+  // Interviews that were paused or interrupted, and the one this page is currently running
+  const [liveSessions, setLiveSessions] = useState<LiveSessionSummary[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
+  const sceneRef = useRef<any[]>([]);
+  const [initialScene, setInitialScene] = useState<any[] | undefined>(undefined);
+  const lastSavedRef = useRef('');
+  const autoLoadedRef = useRef(false);
+  const audioThisTurnRef = useRef(false);
+  const pausedRef = useRef(false);
+  const stateRef = useRef<any>({});
   const captureWhiteboardRef = useRef<(() => Promise<string | null>) | null>(null);
   const whiteboardImageRef = useRef<string | undefined>(undefined);
   const [voice, setVoice] = useState('Sulafat');
+  // A text chat has no voice connection (cheaper). Read-aloud uses the browser's own voice for the interviewer's replies.
+  const [voiceAgent, setVoiceAgent] = useState(true);
+  const voiceAgentRef = useRef(true);
+  voiceAgentRef.current = voiceAgent;
+  const [readAloud, setReadAloud] = useState(false);
+  const readAloudRef = useRef(false);
+  readAloudRef.current = readAloud;
+  const [micSensitivity, setMicSensitivity] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('br-mic-sensitivity'));
+      return localStorage.getItem('br-mic-sensitivity') !== null && Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 50;
+    } catch {
+      return 50;
+    }
+  });
+  const gateRef = useRef<MicGate<string> | null>(null);
+  useEffect(() => {
+    gateRef.current?.setOptions(gateOptionsForSensitivity(micSensitivity));
+    try {
+      localStorage.setItem('br-mic-sensitivity', String(micSensitivity));
+    } catch {
+      /* the setting just will not be remembered */
+    }
+  }, [micSensitivity]);
   const [workspaceTab, setWorkspaceTab] = useState<'problem' | 'whiteboard' | 'code'>('whiteboard');
   const [code, setCode] = useState('');
   const [codeLanguage, setCodeLanguage] = useState('Python');
   const codeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [micVolume, setMicVolume] = useState(0);
   const [hasMicrophone, setHasMicrophone] = useState(true);
-  const [remainingSeconds, setRemainingSeconds] = useState(30 * 60);
+  const [timing, setTiming] = useState<Timing>(DEFAULT_TIMING);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // Practice mode has no limit, so there is nothing remaining
+  const timeLimit = timeLimitSeconds(timing);
+  const remainingSeconds: number | null = timeLimit === null ? null : Math.max(0, timeLimit - elapsedSeconds);
+  const timeChecksSentRef = useRef<Set<number>>(new Set());
 
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [interimTranscript, setInterimTranscript] = useState<{
@@ -78,6 +133,8 @@ export default function App() {
   const lastMicVolumeRef = useRef(0);
   const sessionModeRef = useRef<string>('live_socket');
 
+  stateRef.current = { currentQuestion, timing, voice, currentPhase, elapsedSeconds, transcripts, code, codeLanguage, latestDiagramText };
+
   const showNotice = (msg: string) => setNotice(msg);
   useEffect(() => {
     if (!notice) return;
@@ -106,7 +163,164 @@ export default function App() {
     fetchHistory()
       .then(setHistory)
       .catch(() => {});
+    fetchLiveSessions()
+      .then((list) => {
+        setLiveSessions(list);
+        // A refresh or closed tab leaves an interview marked active. Put the user back in it, ready to rejoin.
+        const cutOff = list.find((x) => x.status === 'active' && Date.now() - x.updatedAt < 30 * 60 * 1000);
+        if (cutOff && !autoLoadedRef.current) {
+          autoLoadedRef.current = true;
+          loadSession(cutOff.id, false);
+        }
+        autoLoadedRef.current = true;
+      })
+      .catch(() => {});
   }, [auth]);
+
+  // Keep the home screen's list current whenever the user lands there
+  useEffect(() => {
+    if (view === 'home' && auth === 'authed') refreshLiveSessions();
+  }, [view, auth]);
+
+  const refreshLiveSessions = () =>
+    fetchLiveSessions()
+      .then(setLiveSessions)
+      .catch(() => {});
+
+  const buildPayload = (status: 'active' | 'paused'): LiveSessionPayload => {
+    const st = stateRef.current;
+    return {
+      status,
+      question: st.currentQuestion,
+      timing: st.timing,
+      voice: st.voice,
+      phase: st.currentPhase,
+      phaseLabel: getPhases(st.currentQuestion.type).find((p) => p.id === st.currentPhase)?.label ?? '',
+      elapsedSeconds: st.elapsedSeconds,
+      transcript: st.transcripts,
+      code: st.code,
+      codeLanguage: st.codeLanguage,
+      diagramText: st.latestDiagramText,
+      scene: sceneRef.current,
+    };
+  };
+
+  /** Save the running interview to the server. Quiet while autosaving; says so if a deliberate save fails. */
+  const saveSessionNow = async (status: 'active' | 'paused') => {
+    const id = sessionIdRef.current;
+    if (!id) return;
+    const payload = buildPayload(status);
+    const json = JSON.stringify(payload);
+    if (status === 'active' && (json === lastSavedRef.current || pausedRef.current)) return;
+    try {
+      await saveLiveSession(id, payload);
+      lastSavedRef.current = json;
+    } catch (err: any) {
+      if (status !== 'active') showNotice(`Could not save your progress: ${err?.message || 'unknown error'}`);
+    }
+  };
+
+  /** Put a saved interview back exactly as it was. With startNow it also rejoins the call. */
+  const loadSession = async (id: string, startNow: boolean) => {
+    try {
+      const d = await fetchLiveSession(id);
+      const savedTiming = normalizeTiming(d.timing);
+      const savedVoice = d.voice || voice;
+      sessionIdRef.current = d.id;
+      lastSavedRef.current = '';
+      pausedRef.current = false;
+      openEntryRef.current = null;
+      setCurrentQuestion(d.question);
+      setTiming(savedTiming);
+      setVoice(savedVoice);
+      setTranscripts(d.transcript);
+      setCode(d.code);
+      setCodeLanguage(d.codeLanguage);
+      setLatestDiagramText(d.diagramText);
+      sceneRef.current = d.scene ?? [];
+      setInitialScene(d.scene && d.scene.length ? d.scene : undefined);
+      setCurrentPhase(d.phase as InterviewPhase);
+      setElapsedSeconds(d.elapsedSeconds);
+      setScorecard(null);
+      setWorkspaceTab(d.question.type === 'coding' ? 'code' : 'whiteboard');
+      setView('interview');
+      if (startNow) {
+        startSession(d.question, { pushToTalk: isPushToTalk, voice: savedVoice, timing: savedTiming, voiceAgent: voiceAgentRef.current }, {
+          hasProgress: d.transcript.length > 0,
+          fromServer: true,
+          elapsed: d.elapsedSeconds,
+        });
+      }
+    } catch (err: any) {
+      showNotice(`Could not reopen that interview: ${err?.message || 'unknown error'}`);
+      refreshLiveSessions();
+    }
+  };
+
+  /** Stop the call, save everything, and go home. The interview waits under "In progress". */
+  const handlePause = async () => {
+    pausedRef.current = true;
+    audioRecorderRef.current?.stop();
+    audioRecorderRef.current = null;
+    audioPlayerRef.current?.stop();
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'stop' }));
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    pttSendingRef.current = false;
+    closeStreamedEntry();
+    setIsInterviewActive(false);
+    setIsInterviewerSpeaking(false);
+    await saveSessionNow('paused');
+    sessionIdRef.current = null;
+    await refreshLiveSessions();
+    setView('home');
+  };
+
+  /** Leaving an interview that is not running: keep it if anything happened, otherwise drop the empty shell. */
+  const leaveToHome = async () => {
+    setShowScorecard(false);
+    const id = sessionIdRef.current;
+    if (id) {
+      const st = stateRef.current;
+      const hasProgress = st.transcripts.length > 0 || !!st.code.trim() || sceneRef.current.length > 0;
+      if (hasProgress) await saveSessionNow('paused');
+      else await deleteLiveSession(id).catch(() => {});
+      sessionIdRef.current = null;
+    }
+    setView('home');
+  };
+
+  const discardSession = async (id: string) => {
+    await deleteLiveSession(id).catch((err) => showNotice(`Could not discard that interview: ${err?.message || 'unknown error'}`));
+    refreshLiveSessions();
+  };
+
+  // Autosave while the interview is live, so a refresh or a closed tab loses almost nothing
+  useEffect(() => {
+    if (view !== 'interview' || !isInterviewActive) return;
+    saveSessionNow('active');
+    const timer = setInterval(() => saveSessionNow('active'), 5000);
+    return () => clearInterval(timer);
+  }, [view, isInterviewActive]);
+
+  // One last best-effort save as the page closes or is hidden
+  useEffect(() => {
+    const flush = () => {
+      const id = sessionIdRef.current;
+      if (id && isInterviewActiveRef.current) beaconLiveSession(id, buildPayload('active'));
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
 
   const persist = (record: SavedInterview) =>
     saveInterview(record)
@@ -119,6 +333,9 @@ export default function App() {
     setHistory([]);
     setReviewRecord(null);
     recordRef.current = null;
+    sessionIdRef.current = null;
+    setLiveSessions([]);
+    autoLoadedRef.current = false;
     setAuth('anon');
   };
 
@@ -213,14 +430,7 @@ export default function App() {
   useEffect(() => {
     if (isInterviewActive) {
       interviewStartTimeRef.current = Date.now();
-      timerIntervalRef.current = setInterval(() => {
-        setRemainingSeconds((prev) => {
-          if (prev <= 1) {
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+      timerIntervalRef.current = setInterval(() => setElapsedSeconds((prev) => prev + 1), 1000);
     } else {
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
@@ -234,6 +444,19 @@ export default function App() {
       }
     };
   }, [isInterviewActive]);
+
+  // In a timed interview, quietly tell the interviewer when time is getting short (practice mode never does)
+  useEffect(() => {
+    if (!isInterviewActive || remainingSeconds === null) return;
+    for (const t of [300, 60, 0]) {
+      if (remainingSeconds <= t && !timeChecksSentRef.current.has(t)) {
+        timeChecksSentRef.current.add(t);
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'time_check', remainingSeconds: t }));
+        }
+      }
+    }
+  }, [remainingSeconds, isInterviewActive]);
 
   // Diagram update handler from Excalidraw (debounced 3s by WhiteboardCanvas)
   const handleDiagramUpdate = useCallback(
@@ -298,33 +521,91 @@ export default function App() {
     openEntryRef.current = null;
   };
 
-  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice });
+  /** Switch push-to-talk on or off at any point in the interview. */
+  const handleTogglePtt = (enabled: boolean) => {
+    isPushToTalkRef.current = enabled;
+    setIsPushToTalk(enabled);
+    if (!enabled) {
+      // Going hands-free: end any held turn so nothing is left half open
+      if (pttReleaseTimerRef.current) {
+        clearTimeout(pttReleaseTimerRef.current);
+        pttReleaseTimerRef.current = null;
+      }
+      if (pttSendingRef.current && wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: 'ptt_end' }));
+      pttSendingRef.current = false;
+      setIsSpacePressed(false);
+    }
+  };
+
+  /** Drop the voice connection and carry on by typing. The server keeps the conversation going as text. */
+  const handleSwitchToText = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const history = stateRef.current.transcripts.slice(-24).map((t: TranscriptEntry) => ({ role: t.role, text: t.text }));
+    ws.send(JSON.stringify({ type: 'switch_mode', mode: 'text', history }));
+    audioRecorderRef.current?.stop();
+    audioRecorderRef.current = null;
+    audioPlayerRef.current?.stop();
+    pttSendingRef.current = false;
+    setIsSpacePressed(false);
+    setIsInterviewerSpeaking(false);
+    sessionModeRef.current = 'conversational_engine';
+    setVoiceAgent(false);
+    voiceAgentRef.current = false;
+    setHasMicrophone(false);
+    showNotice('Switched to text chat. The interviewer will reply in writing.');
+  };
+
+  const handleStartInterview = () => startSession(currentQuestion, { pushToTalk: isPushToTalk, voice, timing, voiceAgent });
 
   const handleHomeStart = (question: SystemDesignQuestion, options: StartOptions) => {
     setCurrentQuestion(question);
     setIsPushToTalk(options.pushToTalk);
     isPushToTalkRef.current = options.pushToTalk;
     setVoice(options.voice);
+    setVoiceAgent(options.voiceAgent);
+    voiceAgentRef.current = options.voiceAgent;
+    setTiming(options.timing);
     setTranscripts([]);
     setLatestDiagramText('');
-    setCode('');
+    setCode(question.coding?.starterCode ?? '');
+    if (question.coding?.starterCode) setCodeLanguage('Python');
     setWorkspaceTab(question.type === 'coding' ? 'code' : 'whiteboard');
     setScorecard(null);
     setCurrentPhase('clarify');
-    setRemainingSeconds(30 * 60);
+    setElapsedSeconds(0);
+    sessionIdRef.current = `ls_${Date.now()}`;
+    lastSavedRef.current = '';
+    sceneRef.current = [];
+    setInitialScene(undefined);
     openEntryRef.current = null;
     setView('interview');
-    startSession(question, options);
+    pausedRef.current = false;
+    startSession(question, options, { hasProgress: false, elapsed: 0 });
   };
 
   // Start interview session
-  const startSession = async (question: SystemDesignQuestion, options: StartOptions) => {
-    if (isInterviewActive || isConnecting) return;
-    setIsConnecting(true);
+  const startSession = async (
+    question: SystemDesignQuestion,
+    options: StartOptions,
+    resumeOpts?: { hasProgress?: boolean; fromServer?: boolean; elapsed?: number; attempt?: number }
+  ) => {
+    if (isInterviewActiveRef.current || connectingRef.current) return;
+    setConnecting(true);
     // Unlock audio output inside the click gesture
     audioPlayerRef.current?.unlock();
     openEntryRef.current = null;
     pttSendingRef.current = false;
+    // Reminders for thresholds that have already passed (for example when rejoining late) are not repeated
+    const elapsedNow = resumeOpts?.elapsed ?? elapsedSeconds;
+    timeChecksSentRef.current = new Set([300, 60, 0].filter((t) => (timeLimitSeconds(options.timing) ?? Infinity) - elapsedNow <= t && elapsedNow > 0));
+
+    // Starting an interview that already has history means rejoining it. Make sure the server has the latest
+    // before it rebuilds the conversation (not for a session just loaded from the server, which is already current).
+    const resuming = !!sessionIdRef.current && (resumeOpts?.hasProgress ?? stateRef.current.transcripts.length > 0);
+    if (resuming && !resumeOpts?.fromServer) await saveSessionNow('active');
+    audioThisTurnRef.current = false;
+    pausedRef.current = false;
 
     try {
       // Connect WebSocket
@@ -345,6 +626,9 @@ export default function App() {
             llm: llmForSocket(),
             liveModel: voiceModelForSocket(),
             pushToTalk: options.pushToTalk,
+            voiceAgent: options.voiceAgent,
+            timing: options.timing,
+            resumeSessionId: resuming ? sessionIdRef.current : undefined,
             kickoff: true,
           })
         );
@@ -356,9 +640,10 @@ export default function App() {
 
           if (msg.type === 'status' && msg.status === 'connected') {
             sessionModeRef.current = msg.mode || 'live_socket';
-            setIsConnecting(false);
+            setConnecting(false);
             setIsInterviewActive(true);
           } else if (msg.type === 'audio') {
+            audioThisTurnRef.current = true;
             // Model 24kHz audio
             if (audioPlayerRef.current) {
               audioPlayerRef.current.playChunk(msg.data);
@@ -371,6 +656,7 @@ export default function App() {
               audioPlayerRef.current.stop();
             }
             setIsInterviewerSpeaking(false);
+            audioThisTurnRef.current = false;
             closeStreamedEntry();
           } else if (msg.type === 'input_transcript') {
             appendStreamed('user', msg.text);
@@ -378,14 +664,34 @@ export default function App() {
             appendStreamed('interviewer', msg.text);
           } else if (msg.type === 'turn_complete') {
             // Only the text-only fallback engine needs browser speech; live mode streams real audio
-            if (sessionModeRef.current === 'conversational_engine' && openEntryRef.current?.role === 'interviewer') {
+            if (sessionModeRef.current === 'conversational_engine' && readAloudRef.current && openEntryRef.current?.role === 'interviewer') {
               audioPlayerRef.current?.speakText(openTextRef.current, true);
             }
+            // Rarely the model answers in text only. Speak it so the candidate is never left in silence.
+            if (
+              sessionModeRef.current === 'live_socket' &&
+              !audioThisTurnRef.current &&
+              openEntryRef.current?.role === 'interviewer' &&
+              openTextRef.current.trim()
+            ) {
+              audioPlayerRef.current?.speakText(openTextRef.current, true);
+            }
+            audioThisTurnRef.current = false;
             closeStreamedEntry();
           } else if (msg.type === 'error') {
+            // A refresh can leave the old connection open for a moment. When rejoining, wait and try again quietly.
+            if (msg.code === 'live_limit' && resuming && (resumeOpts?.attempt ?? 0) < 3) {
+              audioRecorderRef.current?.stop();
+              audioRecorderRef.current = null;
+              setConnecting(false);
+              setIsInterviewActive(false);
+              ws.close();
+              setTimeout(() => startSession(question, options, { ...resumeOpts, hasProgress: true, attempt: (resumeOpts?.attempt ?? 0) + 1 }), 3000);
+              return;
+            }
             showNotice(msg.error || 'Something went wrong with the interview connection.');
             if (['live_limit', 'no_key', 'unauthorized'].includes(msg.code)) {
-              setIsConnecting(false);
+              setConnecting(false);
               setIsInterviewActive(false);
               audioRecorderRef.current?.stop();
               audioRecorderRef.current = null;
@@ -395,7 +701,7 @@ export default function App() {
             }
           } else if (msg.type === 'status' && msg.status === 'closed') {
             setIsInterviewActive(false);
-            setIsConnecting(false);
+            setConnecting(false);
           }
         } catch (err) {
           console.error('Error parsing WS message:', err);
@@ -404,7 +710,7 @@ export default function App() {
 
       ws.onerror = (err) => {
         console.error('WebSocket connection error:', err);
-        setIsConnecting(false);
+        setConnecting(false);
         setIsInterviewActive(false);
       };
 
@@ -412,7 +718,7 @@ export default function App() {
         audioRecorderRef.current?.stop();
         audioRecorderRef.current = null;
         setIsInterviewActive(false);
-        setIsConnecting(false);
+        setConnecting(false);
       };
 
       // Start Microphone Recording (non-blocking)
@@ -420,7 +726,8 @@ export default function App() {
       // In hands-free mode the MicGate sends audio only while someone is speaking (silence costs tokens), and
       // ignores the interviewer's own voice coming back through the speakers, which the model would otherwise
       // take as the candidate interrupting. Push-to-talk already sends only what you hold the key for.
-      const gate = new MicGate<string>();
+      const gate = new MicGate<string>(gateOptionsForSensitivity(micSensitivity));
+      gateRef.current = gate;
       let latestVolume = 0;
       const sendAudio = (data: string) => wsRef.current?.send(JSON.stringify({ type: 'audio', data }));
 
@@ -428,7 +735,8 @@ export default function App() {
         (base64Pcm) => {
           const ws = wsRef.current;
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          if (options.pushToTalk) {
+          // Read live, so push-to-talk can be switched on or off in the middle of the interview
+          if (isPushToTalkRef.current) {
             if (pttSendingRef.current) sendAudio(base64Pcm);
             return;
           }
@@ -443,12 +751,16 @@ export default function App() {
         }
       );
 
-      const micStarted = await recorder.start();
-      setHasMicrophone(micStarted);
-      audioRecorderRef.current = recorder;
+      if (options.voiceAgent) {
+        const micStarted = await recorder.start();
+        setHasMicrophone(micStarted);
+        audioRecorderRef.current = recorder;
+      } else {
+        setHasMicrophone(false);
+      }
     } catch (err: any) {
       console.error('Failed to start interview:', err);
-      setIsConnecting(false);
+      setConnecting(false);
       setIsInterviewActive(false);
     }
   };
@@ -508,6 +820,7 @@ export default function App() {
     diagramText: string;
     codeText: string;
     durationSeconds: number;
+    timing?: Timing;
   }): Promise<ScorecardData> => {
     return api<ScorecardData>('/api/grade', { body: payload, withKey: 'grading' });
   };
@@ -526,6 +839,7 @@ export default function App() {
         code,
         codeLanguage,
         durationSeconds: interviewDurationSeconds,
+        timing,
         scorecard,
       }
     );
@@ -540,6 +854,7 @@ export default function App() {
       diagramText: entry.diagramText,
       codeText: codeTextFor(entry.code, entry.codeLanguage),
       durationSeconds: entry.durationSeconds,
+      timing: entry.timing,
     });
     const updated = { ...entry, scorecard };
     setReviewRecord(updated);
@@ -548,7 +863,7 @@ export default function App() {
 
   // End interview session & trigger grading
   const handleEndInterview = async () => {
-    const elapsed = Math.round(30 * 60 - remainingSeconds);
+    const elapsed = elapsedSeconds;
     setInterviewDurationSeconds(elapsed);
 
     // Snapshot the whiteboard before anything else; skip very large images so storage is not exhausted
@@ -574,10 +889,16 @@ export default function App() {
         code,
         codeLanguage,
         durationSeconds: elapsed,
+        timing,
         scorecard: null,
       };
       recordRef.current = record;
       persist(record);
+    }
+    // The interview is finished, so it no longer belongs under "In progress"
+    if (sessionIdRef.current) {
+      deleteLiveSession(sessionIdRef.current).catch(() => {});
+      sessionIdRef.current = null;
     }
 
     // Stop recorder & audio
@@ -617,6 +938,7 @@ export default function App() {
         diagramText: latestDiagramText,
         codeText: codeTextFor(code, codeLanguage),
         durationSeconds: elapsed,
+        timing,
       });
       if (recordRef.current) {
         recordRef.current = { ...recordRef.current, scorecard: scorecardData };
@@ -698,6 +1020,9 @@ export default function App() {
         <HomeScreen
           onStart={handleHomeStart}
           history={history}
+          liveSessions={liveSessions}
+          onResumeSession={(id) => loadSession(id, true)}
+          onDiscardSession={discardSession}
           user={user}
           onSignOut={signOut}
           onChangeKey={() => setShowKeySetup(true)}
@@ -744,16 +1069,16 @@ export default function App() {
           micVolume={micVolume}
           hasMicrophone={hasMicrophone}
           remainingSeconds={remainingSeconds}
+          elapsedSeconds={elapsedSeconds}
+          timing={timing}
           onStart={handleStartInterview}
           onEnd={handleEndInterview}
+          onPause={handlePause}
           onSendText={handleSendCandidateText}
           onPttPress={pttPress}
           onPttRelease={pttRelease}
           getAudioLevel={() => audioPlayerRef.current?.getLevel() ?? 0}
-          onGoHome={() => {
-            setShowScorecard(false);
-            setView('home');
-          }}
+          onGoHome={leaveToHome}
         />
         {scorecardModal}
         {noticeEl}
@@ -787,6 +1112,10 @@ export default function App() {
               onDiagramUpdate={handleDiagramUpdate}
               latestSerializedText={latestDiagramText}
               captureRef={captureWhiteboardRef}
+              initialElements={initialScene}
+              onSceneChange={(elements) => {
+                sceneRef.current = elements;
+              }}
             />
           </div>
           <div className={`absolute inset-0 ${workspaceTab === 'problem' ? '' : 'invisible pointer-events-none'}`}>
@@ -798,6 +1127,14 @@ export default function App() {
               language={codeLanguage}
               onChange={handleCodeChange}
               onLanguageChange={handleLanguageChange}
+              spec={currentQuestion.coding}
+              onRunSummary={(summary) => {
+                // Let the interviewer see the latest run, by attaching it to the code it just received
+                const commented = summary.split('\n').map((l) => '# ' + l).join('\n');
+                if (wsRef.current?.readyState === WebSocket.OPEN && code.trim()) {
+                  wsRef.current.send(JSON.stringify({ type: 'code', text: `${code}\n\n# Result of the candidate's last run:\n${commented}`, language: codeLanguage }));
+                }
+              }}
             />
           </div>
         </div>
@@ -809,33 +1146,43 @@ export default function App() {
           currentQuestion={currentQuestion}
           onSelectQuestion={(q) => {
             setCurrentQuestion(q);
-            setRemainingSeconds(30 * 60);
+            setElapsedSeconds(0);
           }}
           currentPhase={currentPhase}
           onSelectPhase={handlePhaseChange}
           isInterviewActive={isInterviewActive}
           onStartInterview={handleStartInterview}
+          onPause={handlePause}
+          canRejoin={transcripts.length > 0}
           onEndInterview={handleEndInterview}
           isConnecting={isConnecting}
           transcripts={transcripts}
           interimTranscript={null}
           isInterviewerSpeaking={isInterviewerSpeaking}
           isPushToTalk={isPushToTalk}
-          onTogglePushToTalk={setIsPushToTalk}
+          onTogglePushToTalk={handleTogglePtt}
+          voiceAgent={voiceAgent}
+          onSwitchToText={handleSwitchToText}
+          readAloud={readAloud}
+          onToggleReadAloud={(on) => {
+            setReadAloud(on);
+            if (!on) audioPlayerRef.current?.stop();
+          }}
+          micSensitivity={micSensitivity}
+          onMicSensitivity={setMicSensitivity}
           isSpacePressed={isSpacePressed}
           micVolume={micVolume}
           hasMicrophone={hasMicrophone}
           remainingSeconds={remainingSeconds}
+          elapsedSeconds={elapsedSeconds}
+          timing={timing}
           latestDiagramText={latestDiagramText}
           onSendCoachGuidance={handleSendCoachGuidance}
           onSendCandidateText={handleSendCandidateText}
           getAudioLevel={() => audioPlayerRef.current?.getLevel() ?? 0}
           onPttPress={pttPress}
           onPttRelease={pttRelease}
-          onGoHome={() => {
-            setShowScorecard(false);
-            setView('home');
-          }}
+          onGoHome={leaveToHome}
         />
       </div>
 

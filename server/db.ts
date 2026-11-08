@@ -29,6 +29,25 @@ export interface InterviewDoc {
   summary: InterviewSummary;
   data: Record<string, unknown>;
 }
+export interface LiveSessionDoc {
+  _id: string; // `${userId}:${id}`
+  userId: string;
+  id: string;
+  /** "active" means it was running when last saved; "paused" means the user left on purpose. */
+  status: "active" | "paused";
+  title: string;
+  type: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Unfinished interviews are removed 30 days after their last save. */
+  expiresAt: Date;
+  data: Record<string, unknown>;
+}
+export interface LibraryQuestionDoc {
+  _id: string; // catalog id
+  question: Record<string, unknown>;
+  createdAt: number;
+}
 export interface LeaseDoc {
   _id: string; // userId
   holder: string;
@@ -61,6 +80,8 @@ export async function connectDb(): Promise<void> {
     sessions().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     interviews().createIndex({ userId: 1, savedAt: -1 }),
     leases().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    liveSessions().createIndex({ userId: 1, updatedAt: -1 }),
+    liveSessions().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
   ]);
 }
 
@@ -88,6 +109,8 @@ function need(): Db {
 export const users = (): Collection<UserDoc> => need().collection<UserDoc>("users");
 export const sessions = (): Collection<SessionDoc> => need().collection<SessionDoc>("sessions");
 export const interviews = (): Collection<InterviewDoc> => need().collection<InterviewDoc>("interviews");
+export const liveSessions = (): Collection<LiveSessionDoc> => need().collection<LiveSessionDoc>("interview_sessions");
+export const libraryQuestions = (): Collection<LibraryQuestionDoc> => need().collection<LibraryQuestionDoc>("library_questions");
 export const leases = (): Collection<LeaseDoc> => need().collection<LeaseDoc>("live_leases");
 
 /**

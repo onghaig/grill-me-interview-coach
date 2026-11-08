@@ -87,7 +87,7 @@ function startMock(kind: "openai" | "anthropic", port: number): Promise<http.Ser
 async function main() {
   const mocks = [await startMock("openai", 3391), await startMock("anthropic", 3392)];
   const server = spawn("npx", ["tsx", "server.ts"], {
-    env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", NODE_ENV: "development", OPENAI_BASE_URL: "http://localhost:3391/v1", ANTHROPIC_BASE_URL: "http://localhost:3392" },
+    env: { ...process.env, PORT: String(PORT), MONGODB_URI: "", GEN_RATE_LIMIT_PER_MIN: "500", NODE_ENV: "development", OPENAI_BASE_URL: "http://localhost:3391/v1", ANTHROPIC_BASE_URL: "http://localhost:3392" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -191,6 +191,13 @@ async function main() {
     check("grading omits empty whiteboard and code sections", !/WHITEBOARD|FINAL CODE/.test(JSON.stringify(grSeen.body.messages)));
     void gr;
 
+    // Timing reaches the grader
+    await a.req("POST", "/api/grade", { question: { title: "Design a cache", type: "system_design" }, transcript: [{ role: "user", text: "hi" }], durationSeconds: 600, timing: { mode: "practice" } }, { ...gk, "x-llm-provider": "openai", "x-llm-key": oaiKey });
+    const prSeen = JSON.stringify(seen.openai[seen.openai.length - 1].body.messages);
+    check("grading is told a practice session was untimed", /untimed practice session/.test(prSeen) && /Do not judge pacing/.test(prSeen));
+    await a.req("POST", "/api/grade", { question: { title: "Design a cache", type: "system_design" }, transcript: [{ role: "user", text: "hi" }], durationSeconds: 600, timing: { mode: "timed", minutes: 45 } }, { ...gk, "x-llm-provider": "openai", "x-llm-key": oaiKey });
+    check("grading is told the length of a timed interview", /timed 45 minute interview/.test(JSON.stringify(seen.openai[seen.openai.length - 1].body.messages)));
+
     // Errors are explained per provider
     const q429 = await a.req("POST", "/api/rubric", { prompt: "x" }, { ...gk, "x-llm-provider": "openai", "x-llm-key": "sk-QUOTA-0123456789abcdef0123" });
     check("OpenAI quota error is explained", q429.status === 429 && q429.json.code === "key_quota" && /OpenAI/.test(q429.json.error), q429.json);
@@ -221,15 +228,60 @@ async function main() {
       scorecard: { totalScore: 77, overallVerdict: "Hire" },
     };
     const id = "iv_1700000000001";
-    const put = await a.req("PUT", `/api/interviews/${id}`, iv);
+    const put = await a.req("PUT", `/api/interviews/${id}`, { ...iv, timing: { mode: "practice" } });
     check("save interview", put.status === 200 && put.json.summary?.score === 77, put.json);
     check("bad interview id is rejected", (await a.req("PUT", "/api/interviews/..%2F..", iv)).status === 400);
     const list = await a.req("GET", "/api/interviews");
     check("list shows the interview", list.json.interviews?.length === 1 && list.json.interviews[0].title === "Design a cache", list.json);
-    check("get returns the full record", (await a.req("GET", `/api/interviews/${id}`)).json.interview?.transcript?.length === 1);
+    const full = (await a.req("GET", `/api/interviews/${id}`)).json.interview;
+    check("get returns the full record", full?.transcript?.length === 1);
+    check("the saved record keeps its timing", full?.timing?.mode === "practice", full?.timing);
     check("another user cannot read it", (await b.req("GET", `/api/interviews/${id}`)).status === 404);
     check("another user's list is empty", (await b.req("GET", "/api/interviews")).json.interviews?.length === 0);
     check("another user cannot delete it", ((await b.req("DELETE", `/api/interviews/${id}`)), (await a.req("GET", `/api/interviews/${id}`)).status === 200));
+
+    // In-progress interviews (pause / rejoin / refresh)
+    const lsId = "ls_1700000000001";
+    const ls = {
+      status: "active",
+      question: { id: "tinyurl", title: "Design TinyURL", type: "system_design" },
+      timing: { mode: "normal" },
+      voice: "Sulafat",
+      phase: "design",
+      phaseLabel: "Design",
+      elapsedSeconds: 125,
+      transcript: [{ id: "1", role: "user", text: "hello", timestamp: "10:00" }],
+      code: "print(1)",
+      codeLanguage: "Python",
+      diagramText: "A->B",
+      scene: [{ id: "e1", type: "rectangle" }],
+    };
+    check("unauthenticated live-session list is refused", (await new Client().req("GET", "/api/live-sessions")).status === 401);
+    check("save live session", (await a.req("PUT", `/api/live-sessions/${lsId}`, ls)).status === 200);
+    check("bad live session id is rejected", (await a.req("PUT", "/api/live-sessions/..%2Fx", ls)).status === 400);
+    check("invalid live session body is rejected", (await a.req("PUT", `/api/live-sessions/ls_1700000000002`, { question: {} })).status === 400);
+    const lsList = (await a.req("GET", "/api/live-sessions")).json.sessions;
+    check("live session list shows it", lsList?.length === 1 && lsList[0].status === "active" && lsList[0].elapsedSeconds === 125 && lsList[0].turns === 1, lsList);
+    const lsFull = (await a.req("GET", `/api/live-sessions/${lsId}`)).json;
+    check("live session restores code, diagram, scene and phase", lsFull.code === "print(1)" && lsFull.diagramText === "A->B" && lsFull.scene?.length === 1 && lsFull.phase === "design", lsFull);
+    await a.req("POST", `/api/live-sessions/${lsId}`, { ...ls, status: "paused", elapsedSeconds: 200 });
+    const lsPaused = (await a.req("GET", `/api/live-sessions/${lsId}`)).json;
+    check("a later save (beacon POST) pauses it and keeps one record", lsPaused.status === "paused" && lsPaused.elapsedSeconds === 200 && (await a.req("GET", "/api/live-sessions")).json.sessions.length === 1, lsPaused);
+    check("another user cannot read a live session", (await b.req("GET", `/api/live-sessions/${lsId}`)).status === 404);
+    check("another user's live list is empty", (await b.req("GET", "/api/live-sessions")).json.sessions?.length === 0);
+    await b.req("DELETE", `/api/live-sessions/${lsId}`);
+    check("another user cannot delete it", (await a.req("GET", `/api/live-sessions/${lsId}`)).status === 200);
+    for (let i = 2; i <= 5; i++) await a.req("PUT", `/api/live-sessions/ls_170000000000${i}`, ls);
+    check("sixth in-progress interview is refused", (await a.req("PUT", `/api/live-sessions/ls_1700000000009`, ls)).status === 409);
+    for (let i = 1; i <= 5; i++) await a.req("DELETE", `/api/live-sessions/ls_170000000000${i}`);
+    check("discard removes it", (await a.req("GET", "/api/live-sessions")).json.sessions?.length === 0);
+
+    // Question library
+    check("library requires login", (await new Client().req("GET", "/api/library")).status === 401);
+    const lib = (await a.req("GET", "/api/library")).json;
+    check("library lists the catalog", lib.entries?.length >= 225 && lib.entries.filter((e: any) => e.list === "neetcode150").length === 150 && Array.isArray(lib.cached), lib.entries?.length);
+    check("unknown library question is 404", (await a.req("POST", "/api/library/nope", {})).status === 404);
+    check("uncached library question needs a key", (await a.req("POST", "/api/library/nc-two-sum", {})).json.code === "no_key");
 
     // WebSocket auth
     const un = await openWs("");
