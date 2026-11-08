@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* Code editor syntax colours (highlight.js token classes) */
+.tab-size-4 { tab-size: 4; -moz-tab-size: 4; }
+.hljs-code .hljs-keyword,
+.hljs-code .hljs-selector-tag,
+.hljs-code .hljs-literal,
+.hljs-code .hljs-type { color: #c4b5fd; }
+.hljs-code .hljs-built_in,
+.hljs-code .hljs-title.function_,
+.hljs-code .hljs-title.class_ { color: #7dd3fc; }
+.hljs-code .hljs-title { color: #7dd3fc; }
+.hljs-code .hljs-string,
+.hljs-code .hljs-regexp,
+.hljs-code .hljs-subst { color: #86efac; }
+.hljs-code .hljs-number { color: #fdba74; }
+.hljs-code .hljs-comment,
+.hljs-code .hljs-quote { color: #64748b; font-style: italic; }
+.hljs-code .hljs-params,
+.hljs-code .hljs-variable,
+.hljs-code .hljs-attr { color: #e2e8f0; }
+.hljs-code .hljs-meta,
+.hljs-code .hljs-doctag { color: #f9a8d4; }
+.hljs-code .hljs-operator,
+.hljs-code .hljs-punctuation { color: #cbd5e1; }

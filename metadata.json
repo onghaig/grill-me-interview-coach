@@ -1,0 +1,6 @@
+{
+  "name": "Grill Me: System Design Interview Coach",
+  "description": "Real-time AI system design mock interviewer with interactive Excalidraw whiteboarding and voice feedback powered by Gemini Live API.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
