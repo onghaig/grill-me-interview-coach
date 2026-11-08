@@ -152,14 +152,14 @@ export function InterviewPanel({
               {!isInterviewActive && !isConnecting && (
                 <button
                   onClick={onGoHome}
-                  className="text-[10px] font-bold font-mono tracking-widest text-slate-400 hover:text-indigo-300 uppercase"
+                  className="text-[10px] font-bold font-mono tracking-wider text-slate-400 hover:text-indigo-300 uppercase"
                   title="Back to home"
                 >
                   &larr; Home
                 </button>
               )}
-              <span className="text-[10px] font-bold font-mono tracking-widest text-indigo-400 uppercase">
-                Mock Interview
+              <span className="text-[10px] font-bold font-mono tracking-wider text-indigo-400 uppercase">
+                Technical Interview
               </span>
               <span
                 className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
@@ -199,7 +199,7 @@ export function InterviewPanel({
 
         {/* Expandable Question Selector Dropdown */}
         {showQuestionSelector && (
-          <div className="mt-3 p-2 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="mt-3 p-2 bg-slate-900 border border-slate-800 rounded-xl shadow-xl shadow-black/40 space-y-1 animate-in fade-in slide-in-from-top-2 duration-150">
             <span className="text-[10px] font-mono text-slate-500 uppercase px-2 py-1 block">
               Select Question
             </span>
@@ -262,7 +262,7 @@ export function InterviewPanel({
             <Clock
               className={`w-3.5 h-3.5 ${
                 remainingSeconds < 300
-                  ? 'text-rose-400 animate-pulse'
+                  ? 'text-rose-400'
                   : remainingSeconds < 600
                   ? 'text-amber-400'
                   : 'text-indigo-400'
@@ -309,7 +309,7 @@ export function InterviewPanel({
                 onClick={() => onSelectPhase(phase.id)}
                 className={`flex flex-col items-center py-1.5 px-1 rounded-md text-[10px] font-medium transition text-center ${
                   isActive
-                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                    ? 'bg-indigo-600 text-white'
                     : isCompleted
                     ? 'bg-slate-800/80 text-emerald-400 hover:bg-slate-800'
                     : 'bg-slate-900 text-slate-500 hover:bg-slate-800/50'
@@ -328,7 +328,7 @@ export function InterviewPanel({
           <div className="p-2.5 bg-slate-900/90 border-t border-slate-800 flex flex-col gap-1.5">
             {!hasMicrophone && (
               <div className="text-[10px] text-amber-400/90 flex items-center gap-1 font-medium">
-                <span>🔊 Voice Output is active (Interviewer will speak aloud). Type your answers or hold Space:</span>
+                <span>Voice Output is active (Interviewer will speak aloud). Type your answers or hold Space:</span>
               </div>
             )}
             <form
@@ -367,7 +367,7 @@ export function InterviewPanel({
             <button
               onClick={onStartInterview}
               disabled={isConnecting}
-              className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.99] disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition"
+              className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
             >
               <Play className="w-4 h-4 fill-white" />
               <span>{isConnecting ? 'Starting Session...' : 'Start Interview'}</span>
@@ -375,7 +375,7 @@ export function InterviewPanel({
           ) : (
             <button
               onClick={onEndInterview}
-              className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 active:scale-[0.99] text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-600/20 flex items-center justify-center gap-2 transition"
+              className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
             >
               <Square className="w-4 h-4 fill-white" />
               <span>End Interview & Grade</span>
@@ -412,7 +412,7 @@ export function InterviewPanel({
             {isPushToTalk && !isSpacePressed ? (
               <MicOff className="w-4 h-4 text-slate-500" />
             ) : isInterviewerSpeaking ? (
-              <Volume2 className="w-4 h-4 text-indigo-400 animate-bounce" />
+              <Volume2 className="w-4 h-4 text-indigo-400" />
             ) : (
               <Mic
                 className={`w-4 h-4 ${
@@ -457,7 +457,7 @@ export function InterviewPanel({
             onContextMenu={(e) => e.preventDefault()}
             className={`w-full py-2.5 px-3 rounded-lg text-center font-mono text-[11px] transition-all border touch-none ${
               isSpacePressed
-                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold scale-[1.01]'
+                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
                 : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'
             }`}
           >
@@ -470,7 +470,7 @@ export function InterviewPanel({
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="px-3.5 py-2 border-b border-slate-800/80 bg-slate-900/30 flex items-center justify-between text-xs text-slate-400">
           <div className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
             <span className="font-semibold text-slate-300">Live Transcript</span>
             <span className="text-[10px] text-slate-500 font-mono">({transcripts.length} turns)</span>
           </div>
@@ -599,7 +599,7 @@ export function InterviewPanel({
                     </div>
 
                     <div
-                      className={`p-3 rounded-2xl max-w-[92%] leading-relaxed ${
+                      className={`p-3 rounded-xl max-w-[92%] leading-relaxed ${
                         isUser
                           ? 'bg-indigo-600/25 border border-indigo-500/40 text-indigo-50 rounded-tr-none'
                           : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none shadow-sm'
@@ -616,7 +616,7 @@ export function InterviewPanel({
                 <div
                   className={`flex flex-col ${
                     interimTranscript.role === 'user' ? 'items-end' : 'items-start'
-                  } opacity-90 animate-pulse`}
+                  } opacity-90`}
                 >
                   <div className="flex items-center gap-1.5 mb-1 text-[10px] text-indigo-400 font-mono">
                     <span className="font-bold">
@@ -624,7 +624,7 @@ export function InterviewPanel({
                     </span>
                   </div>
                   <div
-                    className={`p-3 rounded-2xl max-w-[92%] leading-relaxed italic ${
+                    className={`p-3 rounded-xl max-w-[92%] leading-relaxed italic ${
                       interimTranscript.role === 'user'
                         ? 'bg-indigo-600/15 border border-indigo-500/30 text-indigo-200 rounded-tr-none'
                         : 'bg-slate-900/80 border border-slate-800 text-slate-300 rounded-tl-none'

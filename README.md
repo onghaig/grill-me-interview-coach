@@ -1,4 +1,4 @@
-# Grill Me: interview coach
+# Software Engineering Technical Interview Coach
 
 Practice system design, low-level design and LeetCode-style interviews against an AI interviewer you talk to out loud.
 

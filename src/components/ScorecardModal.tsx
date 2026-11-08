@@ -71,7 +71,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-xl shadow-black/40 overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
           <div className="flex items-center gap-3">
@@ -290,7 +290,7 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
         {/* Footer */}
         <div className="px-6 py-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
           <p className="text-xs text-slate-500">
-            Grill Me System Design Bar Raiser Rubric
+            Software Engineering Technical Interview Coach
           </p>
           <button
             onClick={onClose}

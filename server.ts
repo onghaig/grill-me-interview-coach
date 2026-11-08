@@ -762,7 +762,7 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`> Grill Me System Design Server running on http://0.0.0.0:${PORT}`);
+    console.log(`> Interview Coach server running on http://0.0.0.0:${PORT}`);
   });
 }
 

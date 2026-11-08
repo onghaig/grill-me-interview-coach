@@ -1,6 +1,6 @@
 {
-  "name": "Grill Me: System Design Interview Coach",
-  "description": "Real-time AI system design mock interviewer with interactive Excalidraw whiteboarding and voice feedback powered by Gemini Live API.",
+  "name": "Software Engineering Technical Interview Coach",
+  "description": "Real-time AI mock interviewer for system design, low-level design and coding interviews, with a whiteboard, code editor and voice powered by the Gemini Live API.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

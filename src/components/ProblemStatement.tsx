@@ -15,14 +15,14 @@ export function ProblemStatement({ question }: { question: SystemDesignQuestion 
             {question.difficulty}
           </span>
         </div>
-        <h1 className="text-2xl font-bold text-slate-100">{question.title}</h1>
+        <h1 className="text-2xl font-semibold text-slate-100">{question.title}</h1>
 
-        <h2 className="text-[11px] font-mono uppercase tracking-widest text-indigo-400 mt-6 mb-1.5">
+        <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mt-6 mb-1.5">
           Problem
         </h2>
         <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">{question.description}</p>
 
-        <h2 className="text-[11px] font-mono uppercase tracking-widest text-indigo-400 mt-6 mb-1.5">
+        <h2 className="text-[11px] font-mono uppercase tracking-wider text-indigo-400 mt-6 mb-1.5">
           {scaleLabel}
         </h2>
         <p className="text-sm font-mono text-slate-300 leading-relaxed">{question.scale}</p>

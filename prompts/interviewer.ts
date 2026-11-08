@@ -1,5 +1,5 @@
 /**
- * Grill Me: System Design Interviewer System Instructions
+ * Software Engineering Technical Interview Coach: interviewer system instructions
  * You can edit this file to customize the interviewer's behavior, persona,
  * question expectations, or phase transitions.
  */
