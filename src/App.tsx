@@ -24,6 +24,8 @@ export default function App() {
   const [history, setHistory] = useState<SavedInterview[]>(() => loadHistory());
   const [reviewId, setReviewId] = useState<string | null>(null);
   const savedIdRef = useRef<string | null>(null);
+  const captureWhiteboardRef = useRef<(() => Promise<string | null>) | null>(null);
+  const whiteboardImageRef = useRef<string | undefined>(undefined);
   const [voice, setVoice] = useState('Sulafat');
   const [workspaceTab, setWorkspaceTab] = useState<'problem' | 'whiteboard' | 'code'>('whiteboard');
   const [code, setCode] = useState('');
@@ -451,6 +453,7 @@ export default function App() {
         question: currentQuestion,
         transcript: transcripts,
         diagramText: latestDiagramText,
+        whiteboardImage: whiteboardImageRef.current,
         code,
         codeLanguage,
         durationSeconds: interviewDurationSeconds,
@@ -479,6 +482,16 @@ export default function App() {
     const elapsed = Math.round(30 * 60 - remainingSeconds);
     setInterviewDurationSeconds(elapsed);
 
+    // Snapshot the whiteboard before anything else; skip very large images so storage is not exhausted
+    let whiteboardImage: string | undefined;
+    try {
+      const img = await captureWhiteboardRef.current?.();
+      if (img && img.length < 1_500_000) whiteboardImage = img;
+    } catch (err) {
+      console.warn('Whiteboard capture failed:', err);
+    }
+    whiteboardImageRef.current = whiteboardImage;
+
     // Save right away so nothing is lost if grading fails
     const savedId = `iv_${Date.now()}`;
     savedIdRef.current = null;
@@ -491,6 +504,7 @@ export default function App() {
           question: currentQuestion,
           transcript: transcripts,
           diagramText: latestDiagramText,
+          whiteboardImage,
           code,
           codeLanguage,
           durationSeconds: elapsed,
@@ -607,6 +621,7 @@ export default function App() {
             <WhiteboardCanvas
               onDiagramUpdate={handleDiagramUpdate}
               latestSerializedText={latestDiagramText}
+              captureRef={captureWhiteboardRef}
             />
           </div>
           <div className={`absolute inset-0 ${workspaceTab === 'problem' ? '' : 'invisible pointer-events-none'}`}>

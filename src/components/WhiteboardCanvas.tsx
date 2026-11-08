@@ -1,15 +1,42 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Excalidraw } from '@excalidraw/excalidraw';
+import { Excalidraw, exportToBlob } from '@excalidraw/excalidraw';
 import { serializeDiagram, ExcalidrawSimpleElement } from '../utils/diagramSerializer';
 import { Layers, RefreshCw, Sparkles, Trash2, Eye, EyeOff } from 'lucide-react';
 
 interface WhiteboardCanvasProps {
+  /** Filled with a function that renders the board to a PNG data URL (null when the board is empty). */
+  captureRef?: React.MutableRefObject<(() => Promise<string | null>) | null>;
   onDiagramUpdate: (serializedText: string) => void;
   latestSerializedText: string;
 }
 
-export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText }: WhiteboardCanvasProps) {
+export function WhiteboardCanvas({ onDiagramUpdate, latestSerializedText, captureRef }: WhiteboardCanvasProps) {
   const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
+
+  useEffect(() => {
+    if (!captureRef) return;
+    captureRef.current = async () => {
+      if (!excalidrawAPI) return null;
+      const elements = excalidrawAPI.getSceneElements();
+      if (!elements || elements.length === 0) return null;
+      const blob: Blob = await exportToBlob({
+        elements,
+        appState: { ...excalidrawAPI.getAppState(), exportBackground: true, exportWithDarkMode: true },
+        files: excalidrawAPI.getFiles(),
+        mimeType: 'image/png',
+        maxWidthOrHeight: 1400,
+      });
+      return await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
+    };
+    return () => {
+      if (captureRef.current) captureRef.current = null;
+    };
+  }, [excalidrawAPI, captureRef]);
   const [syncStatus, setSyncStatus] = useState<'synced' | 'pending' | 'idle'>('idle');
   const [showSerializedPreview, setShowSerializedPreview] = useState(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

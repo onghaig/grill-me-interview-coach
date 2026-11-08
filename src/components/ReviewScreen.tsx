@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowLeft, Loader2, Trash2 } from 'lucide-react';
 import { SavedInterview } from '../utils/history';
-import { downloadMarkdown, copyMarkdown } from '../utils/exportMarkdown';
+import { downloadMarkdown, copyMarkdown, downloadWhiteboardImage } from '../utils/exportMarkdown';
 import { ScorecardModal } from './ScorecardModal';
 import { ProblemStatement } from './ProblemStatement';
 import { QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
@@ -210,9 +210,24 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
 
         {tab === 'whiteboard' && (
           <div className="max-w-4xl mx-auto px-6 py-8">
+            {interview.whiteboardImage && (
+              <figure>
+                <img
+                  src={interview.whiteboardImage}
+                  alt="Whiteboard at the end of the interview"
+                  className="w-full rounded-lg border border-slate-800 bg-slate-900"
+                />
+                <figcaption className="mt-2 flex items-center justify-between text-xs text-slate-500">
+                  <span>The board as it looked when you ended the interview.</span>
+                  <button onClick={() => downloadWhiteboardImage(interview)} className="text-slate-300 hover:text-slate-50">
+                    Download PNG
+                  </button>
+                </figcaption>
+              </figure>
+            )}
             {interview.diagramText.trim() ? (
               <>
-                <p className="text-xs text-slate-500 mb-2">
+                <p className="text-xs text-slate-500 mt-8 mb-2">
                   Text description of the whiteboard as the interviewer saw it at the end.
                 </p>
                 <pre className="font-mono text-[12px] leading-relaxed bg-slate-900 border border-slate-800 rounded-md p-4 overflow-x-auto text-slate-300 whitespace-pre-wrap select-text">
@@ -220,7 +235,7 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
                 </pre>
               </>
             ) : (
-              <p className="text-sm text-slate-500">Nothing was drawn on the whiteboard.</p>
+              !interview.whiteboardImage && <p className="text-sm text-slate-500">Nothing was drawn on the whiteboard.</p>
             )}
           </div>
         )}

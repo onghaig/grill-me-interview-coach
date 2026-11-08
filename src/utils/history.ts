@@ -7,6 +7,8 @@ export interface SavedInterview {
   question: SystemDesignQuestion;
   transcript: TranscriptEntry[];
   diagramText: string;
+  /** PNG data URL of the whiteboard at the end of the interview, if anything was drawn. */
+  whiteboardImage?: string;
   code: string;
   codeLanguage: string;
   durationSeconds: number;

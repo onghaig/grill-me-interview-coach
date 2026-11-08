@@ -21,7 +21,7 @@ const LANG_FENCE: Record<string, string> = {
   Go: 'go',
 };
 
-export function interviewToMarkdown(iv: SavedInterview): string {
+export function interviewToMarkdown(iv: SavedInterview, opts: { embedImage?: boolean } = { embedImage: true }): string {
   const q = iv.question;
   const type = q.type || 'system_design';
   const sc = iv.scorecard;
@@ -94,9 +94,20 @@ export function interviewToMarkdown(iv: SavedInterview): string {
   out.push(iv.code.trim() ? fence(iv.code, LANG_FENCE[iv.codeLanguage] || '') : '_No code was written._', '');
 
   out.push('## Whiteboard', '');
+  if (iv.whiteboardImage) {
+    out.push(
+      opts.embedImage
+        ? `![Whiteboard at the end of the interview](${iv.whiteboardImage})`
+        : '_The whiteboard image is left out of the clipboard copy. Use Download .md to include it._',
+      ''
+    );
+  }
   out.push(
     iv.diagramText.trim()
-      ? 'Text serialization of the diagram as the interviewer saw it at the end:\n\n' + fence(iv.diagramText, 'text')
+      ? `${iv.whiteboardImage ? 'The same diagram as text' : 'Text serialization of the diagram'}, as the interviewer saw it at the end:\n\n` +
+          fence(iv.diagramText, 'text')
+      : iv.whiteboardImage
+      ? ''
       : '_Nothing was drawn._',
     ''
   );
@@ -121,7 +132,7 @@ export function markdownFilename(iv: SavedInterview): string {
 }
 
 export function downloadMarkdown(iv: SavedInterview): void {
-  const blob = new Blob([interviewToMarkdown(iv)], { type: 'text/markdown;charset=utf-8' });
+  const blob = new Blob([interviewToMarkdown(iv, { embedImage: true })], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -134,9 +145,19 @@ export function downloadMarkdown(iv: SavedInterview): void {
 
 export async function copyMarkdown(iv: SavedInterview): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(interviewToMarkdown(iv));
+    await navigator.clipboard.writeText(interviewToMarkdown(iv, { embedImage: false }));
     return true;
   } catch {
     return false;
   }
+}
+
+export function downloadWhiteboardImage(iv: SavedInterview): void {
+  if (!iv.whiteboardImage) return;
+  const a = document.createElement('a');
+  a.href = iv.whiteboardImage;
+  a.download = markdownFilename(iv).replace(/\.md$/, '-whiteboard.png');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
