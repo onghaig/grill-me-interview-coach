@@ -10,6 +10,8 @@ interface ScorecardModalProps {
   questionTitle: string;
   durationSeconds: number;
   transcriptCount: number;
+  onDownloadMarkdown?: () => void;
+  onCopyMarkdown?: () => Promise<boolean>;
 }
 
 export function ScorecardModal({
@@ -20,6 +22,8 @@ export function ScorecardModal({
   questionTitle,
   durationSeconds,
   transcriptCount,
+  onDownloadMarkdown,
+  onCopyMarkdown,
 }: ScorecardModalProps) {
   const [copied, setCopied] = useState(false);
 
@@ -37,36 +41,6 @@ export function ScorecardModal({
       default:
         return 'bg-rose-500/20 text-rose-400 border-rose-500/50';
     }
-  };
-
-  const handleCopyReport = () => {
-    if (!scorecard) return;
-    const reportText = `INTERVIEW REPORT
-Question: ${questionTitle}
-Duration: ${Math.round(durationSeconds / 60)} minutes (${durationSeconds}s)
-Overall Verdict: ${scorecard.overallVerdict} (Score: ${scorecard.totalScore}/100)
-
-SUMMARY:
-${scorecard.summary}
-
-CATEGORY SCORES:
-${scorecard.categoryScores.map((c) => `- ${c.name}: ${c.score}/5\n  Feedback: ${c.feedback}`).join('\n')}
-
-STRENGTHS:
-${scorecard.strengths.map((s) => `+ ${s}`).join('\n')}
-
-AREAS FOR IMPROVEMENT:
-${scorecard.areasForImprovement.map((a) => `- ${a}`).join('\n')}
-
-KEY ARCHITECTURAL TRADEOFFS:
-${scorecard.keyArchitecturalTradeoffs.map((t) => `* ${t}`).join('\n')}
-
-RECOMMENDED STUDY TOPICS:
-${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
-`;
-    navigator.clipboard.writeText(reportText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
   };
 
   return (
@@ -87,13 +61,25 @@ ${scorecard.recommendedStudyTopics.map((r) => `> ${r}`).join('\n')}
           </div>
 
           <div className="flex items-center gap-2">
-            {scorecard && (
+            {scorecard && onCopyMarkdown && (
               <button
-                onClick={handleCopyReport}
+                onClick={async () => {
+                  const ok = await onCopyMarkdown();
+                  setCopied(ok);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md border border-slate-700 transition"
+              >
+                <span>{copied ? 'Copied' : 'Copy Markdown'}</span>
+              </button>
+            )}
+            {scorecard && onDownloadMarkdown && (
+              <button
+                onClick={onDownloadMarkdown}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-md border border-slate-700 transition"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>{copied ? 'Copied Report!' : 'Export Report'}</span>
+                <span>Download .md</span>
               </button>
             )}
             <button

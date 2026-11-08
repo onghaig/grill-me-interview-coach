@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ArrowLeft, Loader2, Trash2 } from 'lucide-react';
 import { SavedInterview } from '../utils/history';
+import { downloadMarkdown, copyMarkdown } from '../utils/exportMarkdown';
 import { ScorecardModal } from './ScorecardModal';
 import { ProblemStatement } from './ProblemStatement';
 import { QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
@@ -20,6 +21,7 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
   const [regrading, setRegrading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copied, setCopied] = useState(false);
   const sc = interview.scorecard;
   const tabs: { id: Tab; label: string }[] = [
     { id: 'scorecard', label: 'Scorecard' },
@@ -50,6 +52,23 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
             <button onClick={onBack} className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1">
               <ArrowLeft className="w-3.5 h-3.5" /> Past interviews
             </button>
+            <span className="flex items-center gap-4">
+            <button
+              onClick={() => downloadMarkdown(interview)}
+              className="text-xs text-slate-300 hover:text-slate-50"
+              title="Full transcript, rubric, grading and code as one Markdown file"
+            >
+              Download .md
+            </button>
+            <button
+              onClick={async () => {
+                setCopied(await copyMarkdown(interview));
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className="text-xs text-slate-300 hover:text-slate-50"
+            >
+              {copied ? 'Copied' : 'Copy Markdown'}
+            </button>
             {confirmDelete ? (
               <span className="text-xs flex items-center gap-3">
                 <span className="text-slate-400">Delete this interview permanently?</span>
@@ -68,6 +87,7 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
                 <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
             )}
+            </span>
           </div>
           <div className="flex items-baseline justify-between gap-4 mt-3">
             <h1 className="font-display text-2xl font-medium tracking-tight text-slate-50">
@@ -214,6 +234,8 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
           questionTitle={interview.question.title}
           durationSeconds={interview.durationSeconds}
           transcriptCount={interview.transcript.length}
+          onDownloadMarkdown={() => downloadMarkdown(interview)}
+          onCopyMarkdown={() => copyMarkdown(interview)}
         />
       )}
     </div>

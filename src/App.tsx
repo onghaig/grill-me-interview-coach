@@ -6,6 +6,7 @@ import { HomeScreen, StartOptions } from './components/HomeScreen';
 import { CodeEditor } from './components/CodeEditor';
 import { ProblemStatement } from './components/ProblemStatement';
 import { ReviewScreen } from './components/ReviewScreen';
+import { downloadMarkdown, copyMarkdown } from './utils/exportMarkdown';
 import { SavedInterview, loadHistory, saveInterview, deleteInterview } from './utils/history';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
@@ -440,6 +441,24 @@ export default function App() {
     return response.json();
   };
 
+  // The record to export for the interview that just ended (latest saved copy, which includes the scorecard)
+  const currentRecord = (): SavedInterview => {
+    const saved = savedIdRef.current ? loadHistory().find((e) => e.id === savedIdRef.current) : undefined;
+    return (
+      saved ?? {
+        id: 'unsaved',
+        savedAt: Date.now(),
+        question: currentQuestion,
+        transcript: transcripts,
+        diagramText: latestDiagramText,
+        code,
+        codeLanguage,
+        durationSeconds: interviewDurationSeconds,
+        scorecard,
+      }
+    );
+  };
+
   const codeTextFor = (c: string, lang: string) => (c ? `Language: ${lang}\n${c}` : '');
 
   const handleRegrade = async (id: string) => {
@@ -650,6 +669,8 @@ export default function App() {
           questionTitle={currentQuestion.title}
           durationSeconds={interviewDurationSeconds}
           transcriptCount={transcripts.length}
+          onDownloadMarkdown={() => downloadMarkdown(currentRecord())}
+          onCopyMarkdown={() => copyMarkdown(currentRecord())}
         />
       )}
     </div>
