@@ -1,5 +1,6 @@
 import { ScorecardData, TranscriptEntry } from '../types';
 import { SystemDesignQuestion } from '../../prompts/interviewer';
+import { api } from './api';
 
 export interface SavedInterview {
   id: string;
@@ -15,40 +16,25 @@ export interface SavedInterview {
   scorecard: ScorecardData | null;
 }
 
-const KEY = 'interview-history-v1';
-const MAX_ENTRIES = 50;
-
-export function loadHistory(): SavedInterview[] {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
+/** What the home screen list needs, without downloading every transcript. */
+export interface InterviewSummary {
+  id: string;
+  savedAt: number;
+  title: string;
+  type: string;
+  durationSeconds: number;
+  score: number | null;
+  verdict: string | null;
 }
 
-function write(list: SavedInterview[]): SavedInterview[] {
-  let items = list.slice(0, MAX_ENTRIES);
-  // If storage is full, drop the oldest entries until it fits
-  while (items.length > 0) {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(items));
-      return items;
-    } catch {
-      items = items.slice(0, -1);
-    }
-  }
-  return items;
-}
+export const fetchHistory = async (): Promise<InterviewSummary[]> => (await api<{ interviews: InterviewSummary[] }>('/api/interviews')).interviews;
 
-/** Insert or replace by id; newest first. Returns the stored list. */
-export function saveInterview(entry: SavedInterview): SavedInterview[] {
-  const rest = loadHistory().filter((e) => e.id !== entry.id);
-  return write([entry, ...rest].sort((a, b) => b.savedAt - a.savedAt));
-}
+export const fetchInterview = async (id: string): Promise<SavedInterview> =>
+  (await api<{ interview: SavedInterview }>(`/api/interviews/${id}`)).interview;
 
-export function deleteInterview(id: string): SavedInterview[] {
-  return write(loadHistory().filter((e) => e.id !== id));
-}
+export const saveInterview = async (entry: SavedInterview): Promise<InterviewSummary> =>
+  (await api<{ summary: InterviewSummary }>(`/api/interviews/${entry.id}`, { method: 'PUT', body: entry })).summary;
+
+export const deleteInterview = async (id: string): Promise<void> => {
+  await api(`/api/interviews/${id}`, { method: 'DELETE' });
+};

@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer, WebSocket } from "ws";
 import dotenv from "dotenv";
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import {
   SYSTEM_DESIGN_QUESTIONS,
   getInterviewerSystemInstruction,
@@ -81,6 +81,33 @@ function geminiKey(req: express.Request, res: express.Response): string | null {
   return key;
 }
 const perUser = rateLimit({ max: 20, key: (r) => `gen:${r.user?.id || r.ip}` });
+
+/** Turn a Gemini failure into something a user can act on, instead of a wall of JSON. */
+function sendGeminiError(res: express.Response, what: string, err: any) {
+  let status = Number(err?.status) || 0;
+  if (!status) {
+    try {
+      status = Number(JSON.parse(String(err?.message || "{}"))?.error?.code) || 0;
+    } catch {
+      /* not JSON */
+    }
+  }
+  console.error(`${what} failed (${status || "unknown"}):`, String(err?.message || err).slice(0, 300));
+  let message: string;
+  let code = "gemini_error";
+  if (status === 429) {
+    code = "key_quota";
+    message = "Your Gemini API key has run out of quota. Free keys have a daily limit, so try again later or use a key with billing enabled.";
+  } else if (status === 400 || status === 401 || status === 403) {
+    code = "key_invalid";
+    message = "Google rejected your Gemini API key. Open the account menu, choose Gemini key, and check it.";
+  } else if (status === 503 || status === 500) {
+    message = `${what} failed because Gemini is overloaded right now. Try again in a minute.`;
+  } else {
+    message = `${what} failed: ${String(err?.message || err).slice(0, 200)}`;
+  }
+  res.status(status === 429 ? 429 : 502).json({ error: message, code });
+}
 
 app.post("/api/key/check", requireAuth, perUser, async (req, res) => {
   const key = req.body?.apiKey;
@@ -227,7 +254,7 @@ app.post("/api/rubric", requireAuth, perUser, async (req, res) => {
     throw lastErr;
   } catch (error: any) {
     console.error("Rubric generation error:", error);
-    res.status(500).json({ error: "Could not build a rubric: " + (error?.message || String(error)) });
+    sendGeminiError(res, "Building the question", error);
   }
 });
 
@@ -260,6 +287,46 @@ Output ONLY valid JSON:
   }
 }
 Rules: 7 or 8 plannedQuestions, ordered, the first an easy warm-up about their background or current role. Cover every principle supplied (merge if there are more than eight); use their exact names for the competency field only. Never name a principle inside the question text itself, because a real interviewer asks about the situation, not the label. Anchor at least half of the questions on specific resume items and never invent resume facts. 5 to 7 rubric categories with integer weights summing to exactly 100: one per major principle or competency (group if many), plus "Structure and specificity of examples" (clear situation, personal actions, measurable result) and "Self-awareness and learning". Make every signal concrete for this candidate and these principles.`;
+
+const STR = { type: Type.STRING };
+const STR_LIST = { type: Type.ARRAY, items: STR };
+// A response schema makes Gemini return syntactically valid JSON, which long prompts otherwise sometimes break
+const BEHAVIORAL_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    title: STR,
+    difficulty: STR,
+    scale: STR,
+    description: STR,
+    candidateSummary: STR,
+    plannedQuestions: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { competency: STR, question: STR, followUps: STR_LIST, anchor: STR },
+        required: ["competency", "question", "followUps"],
+      },
+    },
+    questionNotes: STR,
+    rubric: {
+      type: Type.OBJECT,
+      properties: {
+        categories: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: { name: STR, weight: { type: Type.INTEGER }, description: STR, strongSignals: STR_LIST, weakSignals: STR_LIST },
+            required: ["name", "weight", "description", "strongSignals", "weakSignals"],
+          },
+        },
+        mustCover: STR_LIST,
+        redFlags: STR_LIST,
+      },
+      required: ["categories", "mustCover", "redFlags"],
+    },
+  },
+  required: ["title", "description", "plannedQuestions", "questionNotes", "rubric"],
+};
 
 app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
   try {
@@ -298,9 +365,9 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
       : prompt;
 
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const response = await generateWithFallback(ai, { contents, config: { responseMimeType: "application/json" } });
+        const response = await generateWithFallback(ai, { contents, config: { responseMimeType: "application/json", responseSchema: BEHAVIORAL_SCHEMA } });
         const raw = JSON.parse(response.text || "{}");
         const question: any = normalizeRubricQuestion({ ...raw, type: "behavioral" }, role || principles || "Behavioral interview");
         const planned = (Array.isArray(raw.plannedQuestions) ? raw.plannedQuestions : [])
@@ -325,7 +392,7 @@ app.post("/api/behavioral", requireAuth, perUser, async (req, res) => {
     throw lastErr;
   } catch (error: any) {
     console.error("Behavioral generation error:", error);
-    res.status(500).json({ error: "Could not prepare the interview: " + (error?.message || String(error)) });
+    sendGeminiError(res, "Preparing the interview", error);
   }
 });
 
@@ -480,9 +547,7 @@ ${categoryTemplate}
 
   } catch (error: any) {
     console.error("Grading error:", error);
-    res.status(500).json({
-      error: "Failed to grade interview: " + (error?.message || String(error)),
-    });
+    sendGeminiError(res, "Grading", error);
   }
 });
 

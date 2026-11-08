@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import { Sparkles, Loader2, ArrowLeft, Play, Radio, Mic, ChevronRight } from 'lucide-react';
 import { Markdown } from './Markdown';
-import { SavedInterview } from '../utils/history';
+import { InterviewSummary } from '../utils/history';
+import { api } from '../utils/api';
+import { LIMITS } from '../utils/limits';
+import type { AccountUser } from './AuthScreen';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS, QUESTION_TYPE_LABELS } from '../../prompts/interviewer';
 
 export const VOICES = [
@@ -21,7 +24,10 @@ export interface StartOptions {
 
 interface HomeScreenProps {
   onStart: (question: SystemDesignQuestion, options: StartOptions) => void;
-  history: SavedInterview[];
+  history: InterviewSummary[];
+  user: AccountUser | null;
+  onSignOut: () => void;
+  onChangeKey: () => void;
   onOpenInterview: (id: string) => void;
 }
 
@@ -37,7 +43,7 @@ const EXAMPLES = [
   'Merge k sorted lists',
 ];
 
-export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProps) {
+export function HomeScreen({ onStart, history, user, onSignOut, onChangeKey, onOpenInterview }: HomeScreenProps) {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,8 +62,13 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
 
   const handleResumeFile = async (file: File) => {
     setError(null);
-    if (file.size > 8 * 1024 * 1024) {
-      setError('That file is over 8 MB. Paste the text of your resume instead.');
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (isPdf && file.size > LIMITS.pdfBytes) {
+      setError(`That PDF is over ${LIMITS.pdfBytes / 1024 / 1024} MB. Paste the text of your resume instead.`);
+      return;
+    }
+    if (!isPdf && file.size > LIMITS.resumeTextFileBytes) {
+      setError(`That file is over ${LIMITS.resumeTextFileBytes / 1024} KB. Paste the most recent part of your resume instead.`);
       return;
     }
     try {
@@ -72,7 +83,12 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
         setResumeText('');
         setResumeFileName('');
       } else {
-        setResumeText((await file.text()).slice(0, 20000));
+        const text = await file.text();
+        if (text.length > LIMITS.resumeChars) {
+          setError(`That resume has ${text.length.toLocaleString()} characters. The limit is ${LIMITS.resumeChars.toLocaleString()}, so trim it to your most recent roles.`);
+          return;
+        }
+        setResumeText(text);
         setResumeFileName(file.name);
         setResumePdf(null);
       }
@@ -86,18 +102,15 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
     setIsGenerating(true);
     setError(null);
     try {
-      const res = await fetch('/api/behavioral', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await api<{ question: SystemDesignQuestion }>('/api/behavioral', {
+        withKey: true,
+        body: {
           resumeText: resumeText.trim(),
           resumePdf: resumePdf ? { data: resumePdf.data, mimeType: 'application/pdf' } : undefined,
           principles: principles.trim(),
           role: role.trim(),
-        }),
+        },
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.question) throw new Error(data.error || `Request failed (${res.status})`);
       setGenerated(data.question as SystemDesignQuestion);
     } catch (err: any) {
       setError(err?.message || 'Something went wrong preparing the interview.');
@@ -112,13 +125,7 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
     setIsGenerating(true);
     setError(null);
     try {
-      const res = await fetch('/api/rubric', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.trim() }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.question) throw new Error(data.error || `Request failed (${res.status})`);
+      const data = await api<{ question: SystemDesignQuestion }>('/api/rubric', { withKey: true, body: { prompt: prompt.trim() } });
       setGenerated(data.question as SystemDesignQuestion);
     } catch (err: any) {
       setError(err?.message || 'Something went wrong building the rubric.');
@@ -163,9 +170,20 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
     <div className="h-screen w-screen overflow-y-auto bg-slate-950 text-slate-100">
       <div className="max-w-3xl mx-auto px-6 py-14">
         <div className="mb-8">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-            <span className="w-2 h-2 rounded-full bg-indigo-500" />
-            Bar Raiser
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+              <span className="w-2 h-2 rounded-full bg-indigo-500" />
+              Bar Raiser
+            </div>
+            <div className="flex items-center gap-4 text-xs text-slate-400 min-w-0">
+              {user && <span className="truncate max-w-[14rem]" title={user.email}>{user.email}</span>}
+              <button onClick={onChangeKey} className="hover:text-slate-200 shrink-0">
+                Gemini key
+              </button>
+              <button onClick={onSignOut} className="hover:text-slate-200 shrink-0">
+                Sign out
+              </button>
+            </div>
           </div>
           <h1 className="font-display text-[2.6rem] leading-[1.1] font-medium tracking-tight mt-8 text-slate-50 text-balance">Practice the interview before the interview</h1>
           <p className="text-slate-400 mt-3 text-[15px] leading-relaxed max-w-2xl">
@@ -227,6 +245,7 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleGenerate();
                 }}
                 rows={4}
+                maxLength={LIMITS.promptChars}
                 placeholder="e.g. Design a notification system for 1B pushes a day, or: LeetCode 200 Number of Islands"
                 className="w-full bg-transparent resize-none outline-none text-sm placeholder:text-slate-600"
                 disabled={isGenerating}
@@ -275,7 +294,7 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                     Resume
                   </label>
                   <label className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer">
-                    Upload PDF or text file
+                    Upload PDF (3 MB max) or text file
                     <input
                       type="file"
                       accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
@@ -304,12 +323,18 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                       setResumeFileName('');
                     }}
                     rows={7}
+                    maxLength={LIMITS.resumeChars}
                     disabled={isGenerating}
                     placeholder="Paste your resume here. Roles, projects and numbers make the questions much more specific."
                     className="w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2.5 text-sm resize-y outline-none placeholder:text-slate-600 focus:border-slate-500"
                   />
                 )}
-                {resumeFileName && <p className="text-[11px] text-slate-500 mt-1">Loaded from {resumeFileName}</p>}
+                {!resumePdf && (
+                  <p className="text-[11px] text-slate-500 mt-1 flex justify-between">
+                    <span>{resumeFileName ? `Loaded from ${resumeFileName}` : ''}</span>
+                    <span className="tabular-nums">{resumeText.length.toLocaleString()} / {LIMITS.resumeChars.toLocaleString()}</span>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -330,6 +355,7 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                   value={principles}
                   onChange={(e) => setPrinciples(e.target.value)}
                   rows={4}
+                  maxLength={LIMITS.principlesChars}
                   disabled={isGenerating}
                   placeholder="The principles or values to be assessed on, or notes on the company and what it cares about. Leave empty for general senior-engineer leadership questions."
                   className="w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2.5 text-sm resize-y outline-none placeholder:text-slate-600 focus:border-slate-500"
@@ -343,6 +369,7 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                 <input
                   id="role"
                   value={role}
+                  maxLength={LIMITS.roleChars}
                   onChange={(e) => setRole(e.target.value)}
                   disabled={isGenerating}
                   placeholder="e.g. Senior Software Engineer at a large e-commerce company"
@@ -418,19 +445,19 @@ export function HomeScreen({ onStart, history, onOpenInterview }: HomeScreenProp
                         className="w-full text-left px-4 py-3 flex items-center justify-between gap-4 hover:bg-slate-900 transition"
                       >
                         <span className="min-w-0">
-                          <span className="block text-sm font-medium truncate">{h.question.title}</span>
+                          <span className="block text-sm font-medium truncate">{h.title}</span>
                           <span className="block text-[11px] text-slate-500 mt-0.5">
-                            {QUESTION_TYPE_LABELS[h.question.type || 'system_design']} ·{' '}
+                            {QUESTION_TYPE_LABELS[(h.type as keyof typeof QUESTION_TYPE_LABELS) || 'system_design'] || 'Interview'} ·{' '}
                             {new Date(h.savedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} ·{' '}
                             {Math.max(1, Math.round(h.durationSeconds / 60))} min
                           </span>
                         </span>
                         <span className="shrink-0 text-xs text-right">
-                          {h.scorecard ? (
+                          {h.score !== null ? (
                             <>
-                              <span className="font-display text-lg text-slate-50">{h.scorecard.totalScore}</span>
+                              <span className="font-display text-lg text-slate-50">{h.score}</span>
                               <span className="text-slate-500">/100</span>
-                              <span className="block text-[11px] text-slate-400">{h.scorecard.overallVerdict}</span>
+                              <span className="block text-[11px] text-slate-400">{h.verdict}</span>
                             </>
                           ) : (
                             <span className="text-slate-500">Not graded</span>

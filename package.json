@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:integration": "tsx scripts/integration-test.ts",
+    "test": "tsx --test src/utils/diagramSerializer.test.ts"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",

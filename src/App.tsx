@@ -8,7 +8,10 @@ import { ProblemStatement } from './components/ProblemStatement';
 import { ReviewScreen } from './components/ReviewScreen';
 import { BehavioralInterview } from './components/BehavioralInterview';
 import { downloadMarkdown, copyMarkdown } from './utils/exportMarkdown';
-import { SavedInterview, loadHistory, saveInterview, deleteInterview } from './utils/history';
+import { SavedInterview, InterviewSummary, fetchHistory, fetchInterview, saveInterview, deleteInterview } from './utils/history';
+import { api, getApiKey } from './utils/api';
+import { AuthScreen, AccountUser } from './components/AuthScreen';
+import { KeySetup } from './components/KeySetup';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
 import { InterviewPhase, TranscriptEntry, ScorecardData, getPhases } from './types';
 import { SystemDesignQuestion, SYSTEM_DESIGN_QUESTIONS } from '../prompts/interviewer';
@@ -22,9 +25,14 @@ export default function App() {
   const [isPushToTalk, setIsPushToTalk] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [view, setView] = useState<'home' | 'interview' | 'review'>('home');
-  const [history, setHistory] = useState<SavedInterview[]>(() => loadHistory());
-  const [reviewId, setReviewId] = useState<string | null>(null);
-  const savedIdRef = useRef<string | null>(null);
+  const [auth, setAuth] = useState<'loading' | 'anon' | 'authed'>('loading');
+  const [user, setUser] = useState<AccountUser | null>(null);
+  const [hasKey, setHasKey] = useState(() => !!getApiKey());
+  const [showKeySetup, setShowKeySetup] = useState(false);
+  const [history, setHistory] = useState<InterviewSummary[]>([]);
+  const [reviewRecord, setReviewRecord] = useState<SavedInterview | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const recordRef = useRef<SavedInterview | null>(null);
   const captureWhiteboardRef = useRef<(() => Promise<string | null>) | null>(null);
   const whiteboardImageRef = useRef<string | undefined>(undefined);
   const [voice, setVoice] = useState('Sulafat');
@@ -67,6 +75,50 @@ export default function App() {
   const openEntryRef = useRef<{ role: 'user' | 'interviewer'; id: string } | null>(null);
   const openTextRef = useRef('');
   const sessionModeRef = useRef<string>('live_socket');
+
+  const showNotice = (msg: string) => setNotice(msg);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 9000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // Who is signed in? Also react to the server saying the session has expired.
+  useEffect(() => {
+    api<{ user: AccountUser }>('/api/auth/me')
+      .then(({ user }) => {
+        setUser(user);
+        setAuth('authed');
+      })
+      .catch(() => setAuth('anon'));
+    const expired = () => {
+      setUser(null);
+      setAuth('anon');
+    };
+    window.addEventListener('auth-expired', expired);
+    return () => window.removeEventListener('auth-expired', expired);
+  }, []);
+
+  useEffect(() => {
+    if (auth !== 'authed') return;
+    fetchHistory()
+      .then(setHistory)
+      .catch(() => {});
+  }, [auth]);
+
+  const persist = (record: SavedInterview) =>
+    saveInterview(record)
+      .then((summary) => setHistory((prev) => [summary, ...prev.filter((x) => x.id !== summary.id)]))
+      .catch((err) => showNotice(`Could not save this interview to your account: ${err?.message || 'unknown error'}. You can still export it.`));
+
+  const signOut = async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    setUser(null);
+    setHistory([]);
+    setReviewRecord(null);
+    recordRef.current = null;
+    setAuth('anon');
+  };
 
   // Initialize audio player
   useEffect(() => {
@@ -287,6 +339,7 @@ export default function App() {
             questionId: question.id,
             customQuestion: question,
             voice: options.voice,
+            apiKey: getApiKey(),
             pushToTalk: options.pushToTalk,
             kickoff: true,
           })
@@ -324,7 +377,16 @@ export default function App() {
             }
             closeStreamedEntry();
           } else if (msg.type === 'error') {
-            console.error('Server session notice:', msg.error);
+            showNotice(msg.error || 'Something went wrong with the interview connection.');
+            if (['live_limit', 'no_key', 'unauthorized'].includes(msg.code)) {
+              setIsConnecting(false);
+              setIsInterviewActive(false);
+              audioRecorderRef.current?.stop();
+              audioRecorderRef.current = null;
+              ws.close();
+              if (msg.code === 'unauthorized') setAuth('anon');
+              if (msg.code === 'no_key') setShowKeySetup(true);
+            }
           } else if (msg.type === 'status' && msg.status === 'closed') {
             setIsInterviewActive(false);
             setIsConnecting(false);
@@ -435,21 +497,12 @@ export default function App() {
     codeText: string;
     durationSeconds: number;
   }): Promise<ScorecardData> => {
-    const response = await fetch('/api/grade', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new Error(body.error || `Grading request failed with status ${response.status}`);
-    }
-    return response.json();
+    return api<ScorecardData>('/api/grade', { body: payload, withKey: true });
   };
 
   // The record to export for the interview that just ended (latest saved copy, which includes the scorecard)
   const currentRecord = (): SavedInterview => {
-    const saved = savedIdRef.current ? loadHistory().find((e) => e.id === savedIdRef.current) : undefined;
+    const saved = recordRef.current;
     return (
       saved ?? {
         id: 'unsaved',
@@ -468,9 +521,7 @@ export default function App() {
 
   const codeTextFor = (c: string, lang: string) => (c ? `Language: ${lang}\n${c}` : '');
 
-  const handleRegrade = async (id: string) => {
-    const entry = loadHistory().find((e) => e.id === id);
-    if (!entry) throw new Error('This interview is no longer saved.');
+  const handleRegrade = async (entry: SavedInterview) => {
     const scorecard = await requestGrade({
       question: entry.question,
       transcript: entry.transcript,
@@ -478,7 +529,9 @@ export default function App() {
       codeText: codeTextFor(entry.code, entry.codeLanguage),
       durationSeconds: entry.durationSeconds,
     });
-    setHistory(saveInterview({ ...entry, scorecard }));
+    const updated = { ...entry, scorecard };
+    setReviewRecord(updated);
+    persist(updated);
   };
 
   // End interview session & trigger grading
@@ -497,24 +550,22 @@ export default function App() {
     whiteboardImageRef.current = whiteboardImage;
 
     // Save right away so nothing is lost if grading fails
-    const savedId = `iv_${Date.now()}`;
-    savedIdRef.current = null;
+    recordRef.current = null;
     if (transcripts.length > 0) {
-      savedIdRef.current = savedId;
-      setHistory(
-        saveInterview({
-          id: savedId,
-          savedAt: Date.now(),
-          question: currentQuestion,
-          transcript: transcripts,
-          diagramText: latestDiagramText,
-          whiteboardImage,
-          code,
-          codeLanguage,
-          durationSeconds: elapsed,
-          scorecard: null,
-        })
-      );
+      const record: SavedInterview = {
+        id: `iv_${Date.now()}`,
+        savedAt: Date.now(),
+        question: currentQuestion,
+        transcript: transcripts,
+        diagramText: latestDiagramText,
+        whiteboardImage,
+        code,
+        codeLanguage,
+        durationSeconds: elapsed,
+        scorecard: null,
+      };
+      recordRef.current = record;
+      persist(record);
     }
 
     // Stop recorder & audio
@@ -555,9 +606,9 @@ export default function App() {
         codeText: codeTextFor(code, codeLanguage),
         durationSeconds: elapsed,
       });
-      if (savedIdRef.current) {
-        const saved = loadHistory().find((e) => e.id === savedIdRef.current);
-        if (saved) setHistory(saveInterview({ ...saved, scorecard: scorecardData }));
+      if (recordRef.current) {
+        recordRef.current = { ...recordRef.current, scorecard: scorecardData };
+        persist(recordRef.current);
       }
       setScorecard(scorecardData);
     } catch (err) {
@@ -569,34 +620,86 @@ export default function App() {
     }
   };
 
-  if (view === 'review') {
-    const entry = history.find((e) => e.id === reviewId);
-    if (entry) {
-      return (
+  const noticeEl = notice ? (
+    <div
+      role="alert"
+      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-lg w-[calc(100%-2rem)] rounded-lg border border-amber-500/40 bg-slate-900 px-4 py-3 text-sm text-amber-100 shadow-xl shadow-black/40 flex items-start gap-3"
+    >
+      <span className="flex-1 leading-relaxed">{notice}</span>
+      <button onClick={() => setNotice(null)} className="text-slate-400 hover:text-slate-200 text-xs shrink-0">
+        Dismiss
+      </button>
+    </div>
+  ) : null;
+
+  if (auth === 'loading') {
+    return <div className="h-screen w-screen bg-slate-950 flex items-center justify-center text-sm text-slate-500">Loading...</div>;
+  }
+  if (auth === 'anon') {
+    return (
+      <AuthScreen
+        onAuthed={(u) => {
+          setUser(u);
+          setAuth('authed');
+        }}
+      />
+    );
+  }
+  if (!hasKey || showKeySetup) {
+    return (
+      <KeySetup
+        onSaved={() => {
+          setHasKey(!!getApiKey());
+          setShowKeySetup(false);
+        }}
+        onCancel={hasKey ? () => setShowKeySetup(false) : undefined}
+      />
+    );
+  }
+
+  if (view === 'review' && reviewRecord) {
+    return (
+      <>
         <ReviewScreen
-          key={entry.id + (entry.scorecard ? '-g' : '-u')}
-          interview={entry}
+          key={reviewRecord.id + (reviewRecord.scorecard ? '-g' : '-u')}
+          interview={reviewRecord}
           onBack={() => setView('home')}
           onDelete={() => {
-            setHistory(deleteInterview(entry.id));
-            setView('home');
+            const id = reviewRecord.id;
+            deleteInterview(id)
+              .then(() => {
+                setHistory((prev) => prev.filter((x) => x.id !== id));
+                setView('home');
+              })
+              .catch((err) => showNotice(`Could not delete: ${err?.message || 'unknown error'}`));
           }}
-          onRegrade={() => handleRegrade(entry.id)}
+          onRegrade={() => handleRegrade(reviewRecord)}
         />
-      );
-    }
+        {noticeEl}
+      </>
+    );
   }
 
   if (view === 'home' || view === 'review') {
     return (
-      <HomeScreen
-        onStart={handleHomeStart}
-        history={history}
-        onOpenInterview={(id) => {
-          setReviewId(id);
-          setView('review');
-        }}
-      />
+      <>
+        <HomeScreen
+          onStart={handleHomeStart}
+          history={history}
+          user={user}
+          onSignOut={signOut}
+          onChangeKey={() => setShowKeySetup(true)}
+          onOpenInterview={(id) => {
+            fetchInterview(id)
+              .then((record) => {
+                setReviewRecord(record);
+                setView('review');
+              })
+              .catch((err) => showNotice(`Could not open that interview: ${err?.message || 'unknown error'}`));
+          }}
+        />
+        {noticeEl}
+      </>
     );
   }
 
@@ -641,6 +744,7 @@ export default function App() {
           }}
         />
         {scorecardModal}
+        {noticeEl}
       </>
     );
   }
@@ -724,6 +828,7 @@ export default function App() {
       </div>
 
       {scorecardModal}
+      {noticeEl}
     </div>
   );
 }
