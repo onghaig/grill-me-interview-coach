@@ -35,7 +35,7 @@ npm run test:integration  # starts the server and checks auth, isolation, limits
 npm run lint              # typecheck
 ```
 
-## Deploy on Railway
+## Deploy on Railway (alternative)
 
 1. Push this repo to GitHub and create a Railway project from it. `railway.json` sets the build, start command and the `/healthz` health check.
 2. Add a MongoDB database to the project (Railway's MongoDB template, or a free MongoDB Atlas M0 cluster).
@@ -43,6 +43,29 @@ npm run lint              # typecheck
 4. Generate a public domain for the service. HTTPS is required (session cookies are `Secure` in production).
 
 That is all the configuration there is. No Gemini key is set on the server.
+
+## Deploy on Google Cloud Run (free tier)
+
+Cloud Run runs the Docker image, supports WebSockets, and scales to zero, so you pay nothing while nobody is using it. Pair it with a free MongoDB Atlas M0 cluster (512 MB).
+
+1. **Database.** Create a free M0 cluster at https://www.mongodb.com/cloud/atlas. Pick the Google Cloud provider and the `us-central1` region to match the service. Create a database user with a strong password, and under Network Access allow `0.0.0.0/0` (Cloud Run has no fixed outgoing address on the free setup, so the password is the protection). Copy the `mongodb+srv://...` connection string.
+2. **Google Cloud.** Create a project with billing enabled (the free allowance still needs a card on file), then install the CLI and sign in:
+   ```bash
+   gcloud auth login
+   ```
+3. **Deploy.** From the repo root:
+   ```bash
+   MONGODB_URI='mongodb+srv://USER:PASSWORD@cluster.mongodb.net/' PROJECT_ID=your-project-id ./scripts/deploy-cloudrun.sh
+   ```
+   The script enables the needed services, stores the connection string in Secret Manager (not in the image or plain environment variables), builds the image with Cloud Build, and deploys it. It prints the HTTPS URL when done. Re-run the same command to deploy updates; `MONGODB_URI` is only needed the first time.
+
+What the script sets, and why:
+- `--timeout 3600`: a live interview is one long WebSocket request. The default of 5 minutes would cut interviews off.
+- `--max-instances 3`: caps cost and keeps the per-instance rate limits meaningful.
+- `--min-instances 0`: no cost while idle. The first visit after a quiet period takes a few seconds longer.
+- `--region us-central1`: one of the regions covered by the Cloud Run free tier.
+
+No Gemini key is set on the server: each user adds their own in the app.
 
 ## Token efficiency
 
