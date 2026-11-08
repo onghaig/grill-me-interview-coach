@@ -6,6 +6,7 @@ import { HomeScreen, StartOptions } from './components/HomeScreen';
 import { CodeEditor } from './components/CodeEditor';
 import { ProblemStatement } from './components/ProblemStatement';
 import { ReviewScreen } from './components/ReviewScreen';
+import { BehavioralInterview } from './components/BehavioralInterview';
 import { downloadMarkdown, copyMarkdown } from './utils/exportMarkdown';
 import { SavedInterview, loadHistory, saveInterview, deleteInterview } from './utils/history';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
@@ -599,6 +600,51 @@ export default function App() {
     );
   }
 
+  const scorecardModal = showScorecard ? (
+      <ScorecardModal
+        scorecard={scorecard}
+        isLoading={isGrading}
+        error={gradingError}
+        onClose={() => setShowScorecard(false)}
+        questionTitle={currentQuestion.title}
+        durationSeconds={interviewDurationSeconds}
+        transcriptCount={transcripts.length}
+        rubric={currentQuestion.rubric}
+        onDownloadMarkdown={() => downloadMarkdown(currentRecord())}
+        onCopyMarkdown={() => copyMarkdown(currentRecord())}
+      />
+  ) : null;
+
+  if (currentQuestion.type === 'behavioral') {
+    return (
+      <>
+        <BehavioralInterview
+          question={currentQuestion}
+          isInterviewActive={isInterviewActive}
+          isConnecting={isConnecting}
+          transcripts={transcripts}
+          isInterviewerSpeaking={isInterviewerSpeaking}
+          isPushToTalk={isPushToTalk}
+          isSpacePressed={isSpacePressed}
+          micVolume={micVolume}
+          hasMicrophone={hasMicrophone}
+          remainingSeconds={remainingSeconds}
+          onStart={handleStartInterview}
+          onEnd={handleEndInterview}
+          onSendText={handleSendCandidateText}
+          onPttPress={pttPress}
+          onPttRelease={pttRelease}
+          getAudioLevel={() => audioPlayerRef.current?.getLevel() ?? 0}
+          onGoHome={() => {
+            setShowScorecard(false);
+            setView('home');
+          }}
+        />
+        {scorecardModal}
+      </>
+    );
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans">
       {/* Left 65%: Whiteboard / Code workspace */}
@@ -677,21 +723,7 @@ export default function App() {
         />
       </div>
 
-      {/* Post-Interview Scorecard Modal */}
-      {showScorecard && (
-        <ScorecardModal
-          scorecard={scorecard}
-          isLoading={isGrading}
-          error={gradingError}
-          onClose={() => setShowScorecard(false)}
-          questionTitle={currentQuestion.title}
-          durationSeconds={interviewDurationSeconds}
-          transcriptCount={transcripts.length}
-          rubric={currentQuestion.rubric}
-          onDownloadMarkdown={() => downloadMarkdown(currentRecord())}
-          onCopyMarkdown={() => copyMarkdown(currentRecord())}
-        />
-      )}
+      {scorecardModal}
     </div>
   );
 }

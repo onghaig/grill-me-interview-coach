@@ -4,7 +4,7 @@ import { Markdown } from './Markdown';
 export function ProblemStatement({ question }: { question: SystemDesignQuestion }) {
   const type = question.type || 'system_design';
   const scaleLabel =
-    type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : 'Scale and traffic';
+    type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : type === 'behavioral' ? 'Format' : 'Scale and traffic';
   // The statement already lists constraints for coding questions, so skip the duplicate card
   const showScale = !(type === 'coding' && /constraints/i.test(question.description));
   return (

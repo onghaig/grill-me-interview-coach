@@ -290,7 +290,7 @@ export function ScorecardModal({
         {/* Footer */}
         <div className="px-6 py-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
           <p className="text-xs text-slate-500">
-            Software Engineering Technical Interview Coach
+            Bar Raiser
           </p>
           <button
             onClick={onClose}

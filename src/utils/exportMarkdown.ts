@@ -53,7 +53,7 @@ export function interviewToMarkdown(iv: SavedInterview, opts: { embedImage?: boo
   out.push('## Problem', '');
   out.push(`- Type: ${QUESTION_TYPE_LABELS[type]}`);
   out.push(`- Difficulty: ${q.difficulty}`);
-  out.push(`- ${type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : 'Scale'}: ${q.scale}`, '');
+  out.push(`- ${type === 'coding' ? 'Constraints' : type === 'low_level_design' ? 'Scope' : type === 'behavioral' ? 'Format' : 'Scale'}: ${q.scale}`, '');
   out.push(q.description.trim(), '');
 
   if (q.rubric) {
@@ -70,6 +70,17 @@ export function interviewToMarkdown(iv: SavedInterview, opts: { embedImage?: boo
     out.push('### Red flags', '', bullets(q.rubric.redFlags), '');
   } else {
     out.push('## Grading rubric', '', '_This was a built-in question graded on the default categories for its type, with no custom rubric._', '');
+  }
+
+  if (type === 'behavioral' && q.plannedQuestions?.length) {
+    out.push('## Interview plan', '');
+    out.push('The questions the interviewer planned. The conversation may have skipped, merged or reordered them.', '');
+    q.plannedQuestions.forEach((pq, i) => {
+      out.push(`${i + 1}. **${pq.competency}**: ${pq.question}`);
+      if (pq.anchor) out.push(`   - Resume anchor: ${pq.anchor}`);
+      if (pq.followUps.length) out.push(`   - Follow-ups: ${pq.followUps.join(' / ')}`);
+    });
+    out.push('');
   }
 
   out.push('## Result', '');
@@ -90,27 +101,29 @@ export function interviewToMarkdown(iv: SavedInterview, opts: { embedImage?: boo
     out.push('_This interview was not graded._', '');
   }
 
-  out.push(`## Final code${iv.code.trim() ? ` (${iv.codeLanguage})` : ''}`, '');
-  out.push(iv.code.trim() ? fence(iv.code, LANG_FENCE[iv.codeLanguage] || '') : '_No code was written._', '');
+  if (type !== 'behavioral') {
+    out.push(`## Final code${iv.code.trim() ? ` (${iv.codeLanguage})` : ''}`, '');
+    out.push(iv.code.trim() ? fence(iv.code, LANG_FENCE[iv.codeLanguage] || '') : '_No code was written._', '');
 
-  out.push('## Whiteboard', '');
-  if (iv.whiteboardImage) {
+    out.push('## Whiteboard', '');
+    if (iv.whiteboardImage) {
+      out.push(
+        opts.embedImage
+          ? `![Whiteboard at the end of the interview](${iv.whiteboardImage})`
+          : '_The whiteboard image is left out of the clipboard copy. Use Download .md to include it._',
+        ''
+      );
+    }
     out.push(
-      opts.embedImage
-        ? `![Whiteboard at the end of the interview](${iv.whiteboardImage})`
-        : '_The whiteboard image is left out of the clipboard copy. Use Download .md to include it._',
+      iv.diagramText.trim()
+        ? `${iv.whiteboardImage ? 'The same diagram as text' : 'Text serialization of the diagram'}, as the interviewer saw it at the end:\n\n` +
+            fence(iv.diagramText, 'text')
+        : iv.whiteboardImage
+        ? ''
+        : '_Nothing was drawn._',
       ''
     );
   }
-  out.push(
-    iv.diagramText.trim()
-      ? `${iv.whiteboardImage ? 'The same diagram as text' : 'Text serialization of the diagram'}, as the interviewer saw it at the end:\n\n` +
-          fence(iv.diagramText, 'text')
-      : iv.whiteboardImage
-      ? ''
-      : '_Nothing was drawn._',
-    ''
-  );
 
   out.push('## Transcript', '');
   if (iv.transcript.length === 0) out.push('_No transcript was recorded._', '');

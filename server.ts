@@ -39,7 +39,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, v] of hits) if (v.every((t) => now - t > 60_000)) hits.delete(k);
 }, 5 * 60_000).unref();
-app.use(["/api/rubric", "/api/grade"], rateLimit(20));
+app.use(["/api/rubric", "/api/grade", "/api/behavioral"], rateLimit(20));
 
 // Text models tried in order; falls through on overload/unavailable errors.
 const TEXT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-2.5-flash"];
@@ -133,7 +133,7 @@ function normalizeRubricQuestion(raw: any, userPrompt: string) {
     acc += c.weight;
   });
   const difficulty = ["Medium", "Hard", "Very Hard"].includes(raw.difficulty) ? raw.difficulty : "Hard";
-  const type = ["system_design", "low_level_design", "coding"].includes(raw.type) ? raw.type : "system_design";
+  const type = ["system_design", "low_level_design", "coding", "behavioral"].includes(raw.type) ? raw.type : "system_design";
   return {
     id: "custom-" + Date.now(),
     type,
@@ -181,12 +181,93 @@ app.post("/api/rubric", async (req, res) => {
   }
 });
 
+const BEHAVIORAL_PROMPT = (opts: { resumeText: string; hasPdf: boolean; principles: string; role: string }) => `You are a hiring manager and bar raiser who runs behavioral interviews.
+Design a 30-minute behavioral interview for a candidate.
+
+${opts.role ? `Role or company context from the candidate:\n"""\n${opts.role}\n"""\n` : ""}
+${opts.principles ? `Leadership principles, values or business information the interview must assess:\n"""\n${opts.principles}\n"""\n` : "No principles were supplied, so assess common senior-engineer leadership competencies (ownership, dealing with ambiguity, conflict, influencing without authority, raising the bar, delivering results, learning from failure).\n"}
+${opts.resumeText ? `Candidate resume:\n"""\n${opts.resumeText}\n"""\n` : opts.hasPdf ? "The candidate's resume is attached as a PDF.\n" : "No resume was supplied, so write questions that do not depend on a specific resume.\n"}
+Output ONLY valid JSON:
+{
+  "title": "Behavioral interview: short role/company or theme, e.g. Behavioral interview: Senior Engineer at Acme",
+  "difficulty": "Medium" | "Hard",
+  "scale": "e.g. About 30 minutes, 6 to 8 stories",
+  "description": "Markdown. 2 sentences on what this interview covers, then a '**Focus areas**' line followed by a bullet list of the competencies or principles that will be assessed. Do NOT list the questions.",
+  "candidateSummary": "PRIVATE. 3-5 sentences summarising the candidate's background from the resume: roles, years, notable projects with any numbers, seniority. Only facts in the resume. Empty string if no resume.",
+  "plannedQuestions": [
+    {
+      "competency": "exact principle or competency name this question assesses",
+      "question": "an open question that asks for ONE specific past example, phrased the way a person would say it aloud",
+      "followUps": ["2 or 3 probing follow-ups: the candidate's own role, the decision and trade-off, the measurable result, what they would change"],
+      "anchor": "the specific resume item this is based on, or empty"
+    }
+  ],
+  "questionNotes": "PRIVATE. For each competency: what a strong answer sounds like for this seniority, and the common weak patterns (all 'we', no metrics, no ownership, blame).",
+  "rubric": {
+    "categories": [{ "name": "category", "weight": number, "description": "what is assessed", "strongSignals": ["..."], "weakSignals": ["..."] }],
+    "mustCover": ["competencies or principles that must come up with a real example"],
+    "redFlags": ["specific behaviours that count heavily against the candidate"]
+  }
+}
+Rules: 7 or 8 plannedQuestions, ordered, the first an easy warm-up about their background or current role. Cover every principle supplied (merge if there are more than eight); use their exact names for the competency field only. Never name a principle inside the question text itself, because a real interviewer asks about the situation, not the label. Anchor at least half of the questions on specific resume items and never invent resume facts. 5 to 7 rubric categories with integer weights summing to exactly 100: one per major principle or competency (group if many), plus "Structure and specificity of examples" (clear situation, personal actions, measurable result) and "Self-awareness and learning". Make every signal concrete for this candidate and these principles.`;
+
+app.post("/api/behavioral", async (req, res) => {
+  try {
+    const resumeText = String(req.body?.resumeText || "").trim().slice(0, 20000);
+    const principles = String(req.body?.principles || "").trim().slice(0, 8000);
+    const role = String(req.body?.role || "").trim().slice(0, 1000);
+    const pdf = req.body?.resumePdf as { data?: string; mimeType?: string } | undefined;
+    const hasPdf = !!(pdf?.data && pdf.mimeType === "application/pdf" && pdf.data.length < 14_000_000);
+    if (!resumeText && !hasPdf && !principles && !role) {
+      return res.status(400).json({ error: "Add a resume, or the principles or role you want to be interviewed on." });
+    }
+    if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY is not set on the server." });
+
+    const prompt = BEHAVIORAL_PROMPT({ resumeText, hasPdf, principles, role });
+    const contents = hasPdf
+      ? [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "application/pdf", data: pdf!.data! } }] }]
+      : prompt;
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await generateWithFallback({ contents, config: { responseMimeType: "application/json" } });
+        const raw = JSON.parse(response.text || "{}");
+        const question: any = normalizeRubricQuestion({ ...raw, type: "behavioral" }, role || principles || "Behavioral interview");
+        const planned = (Array.isArray(raw.plannedQuestions) ? raw.plannedQuestions : [])
+          .filter((q: any) => q && q.question)
+          .slice(0, 10)
+          .map((q: any) => ({
+            competency: String(q.competency || "General"),
+            question: String(q.question),
+            followUps: (Array.isArray(q.followUps) ? q.followUps : []).map((f: any) => String(f)).slice(0, 4),
+            anchor: q.anchor ? String(q.anchor) : "",
+          }));
+        if (planned.length < 3) throw new Error("Model returned too few interview questions.");
+        question.plannedQuestions = planned;
+        const summary = String(raw.candidateSummary || "").trim();
+        if (summary) question.questionNotes = `Candidate background (from the resume): ${summary}\n\n${question.questionNotes}`;
+        question.scale = String(raw.scale || "About 30 minutes, 6 to 8 stories");
+        return res.json({ question });
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  } catch (error: any) {
+    console.error("Behavioral generation error:", error);
+    res.status(500).json({ error: "Could not prepare the interview: " + (error?.message || String(error)) });
+  }
+});
+
 app.post("/api/grade", async (req, res) => {
   try {
     const { question, transcript, diagramText, codeText, durationSeconds } = req.body;
     const qType: string = question?.type || "system_design";
     const roleLine =
-      qType === "coding"
+      qType === "behavioral"
+        ? "a hiring manager and Bar Raiser who grades behavioral interviews strictly on evidence"
+        : qType === "coding"
         ? "a Staff Software Engineer and Bar Raiser running algorithms and data structures coding interviews"
         : qType === "low_level_design"
         ? "a Principal Engineer and Bar Raiser specialising in object-oriented / low-level design interviews"
@@ -210,6 +291,10 @@ app.post("/api/grade", async (req, res) => {
       "feedback": "Evidence-based analysis against this category (weight ${c.weight}%)"
     }`
           )
+          .join(",\n")
+      : qType === "behavioral"
+      ? ["Specificity & Structure of Examples", "Ownership & Personal Impact", "Results & Metrics", "Judgment & Trade-offs", "Self-Awareness & Learning", "Communication"]
+          .map((n) => `    {\n      "name": "${n}",\n      "score": number (1-5),\n      "feedback": "Evidence-based analysis"\n    }`)
           .join(",\n")
       : qType === "coding"
       ? ["Problem Understanding & Clarification", "Approach & Algorithm Choice", "Correctness of Implementation", "Complexity Analysis", "Testing & Edge Cases", "Communication & Use of Hints"]
@@ -260,7 +345,7 @@ In your feedback, say which must-cover topics were hit or missed and call out an
       : "";
 
     const gradingPrompt = `You are ${roleLine}.
-Review the following ${qType === "coding" ? "coding" : qType === "low_level_design" ? "low-level design" : "system design"} interview performance and provide a comprehensive, realistic evaluation rubric.
+Review the following ${qType === "behavioral" ? "behavioral" : qType === "coding" ? "coding" : qType === "low_level_design" ? "low-level design" : "system design"} interview performance and provide a comprehensive, realistic evaluation rubric.
 
 QUESTION:
 Title: ${question?.title || "System Design Question"}
@@ -275,6 +360,7 @@ ${diagramText || "(No diagram components created)"}
 
 FINAL CODE IN THE EDITOR:
 ${codeText || "(No code written)"}
+${qType === "behavioral" ? "This was a spoken behavioral interview: ignore the diagram and code sections. Grade on specific examples, the candidate\u0027s own actions (I versus we), measurable results, judgment and self-awareness, and credit only what the transcript shows." : ""}
 ${qType === "coding" ? "For coding, judge actual correctness and complexity of the final code, whether they tested it, and how many hints they needed." : ""}
 
 INTERVIEW TRANSCRIPT:
@@ -331,6 +417,24 @@ ${categoryTemplate}
 
 // The opening turn is the one place the interviewer talks at length
 function kickoffInstruction(q: SystemDesignQuestion): string {
+  if (q.type === "behavioral") {
+    const first = q.plannedQuestions?.[0];
+    return `[START OF INTERVIEW] The candidate has just joined the call. Open the behavioral interview like a real interviewer, in this order, as natural speech:
+1. Greet them warmly and say you're glad they could make it. Introduce yourself in a few words as their interviewer for today.
+2. In one or two sentences, explain the format: about thirty minutes, a conversation about their past experience, you'll ask for specific examples, and it's fine to take a moment to think.
+3. If the private notes contain a candidate background, say naturally that you've had a look at their background and mention one concrete thing from it. Do not recite their resume.
+4. Then ask exactly this FIRST question, in natural spoken words but keeping its meaning and every specific in it (company, project, numbers), and stop. Do not substitute a different question. ${first ? `First question: "${first.question}"${first.anchor ? ` (based on: ${first.anchor})` : ""}` : "Ask a friendly warm-up about their current role and background."}
+
+Hard rules for this opening:
+- Do NOT mention a whiteboard, code, an editor or a screen. There is none in this interview.
+- Do NOT name, list or hint at any leadership principles, values or competencies. Never say the word "principles".
+- Say in step 3 that you looked over their background, with one specific from the notes, before asking the question.
+- Do NOT ask whether they have questions before starting and do NOT ask what they want to cover. Your last sentence is the first question.
+- Do NOT invent anything about their schedule, the company or how they got here. Only use facts from the private notes.
+Speak for roughly 15 to 30 seconds, friendly and unhurried.
+
+Interview focus (private reference): ${q.title}. ${q.description}`;
+  }
   const kind =
     q.type === "coding"
       ? "coding interview"
@@ -796,7 +900,7 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   server.listen(PORT, "0.0.0.0", () => {
-    console.log(`> Interview Coach server running on http://0.0.0.0:${PORT}`);
+    console.log(`> Bar Raiser server running on http://0.0.0.0:${PORT}`);
   });
 }
 

@@ -163,7 +163,7 @@ export function InterviewPanel({
                 </button>
               )}
               <span className="text-[10px] font-bold font-mono tracking-wider text-indigo-400 uppercase">
-                Technical Interview
+                Bar Raiser
               </span>
               <span
                 className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${

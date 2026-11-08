@@ -28,9 +28,9 @@ export function ReviewScreen({ interview, onBack, onDelete, onRegrade }: ReviewS
     { id: 'scorecard', label: 'Scorecard' },
     ...(interview.question.rubric ? [{ id: 'rubric' as Tab, label: 'Rubric' }] : []),
     { id: 'transcript', label: `Transcript (${interview.transcript.length})` },
-    { id: 'code', label: 'Code' },
+    ...(interview.question.type === 'behavioral' ? [] : [{ id: 'code' as Tab, label: 'Code' }]),
     { id: 'problem', label: 'Problem' },
-    { id: 'whiteboard', label: 'Whiteboard' },
+    ...(interview.question.type === 'behavioral' ? [] : [{ id: 'whiteboard' as Tab, label: 'Whiteboard' }]),
   ];
 
   const regrade = async () => {

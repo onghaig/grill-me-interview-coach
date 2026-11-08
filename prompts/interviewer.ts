@@ -1,15 +1,16 @@
 /**
- * Software Engineering Technical Interview Coach: interviewer system instructions
+ * Bar Raiser: interviewer system instructions
  * You can edit this file to customize the interviewer's behavior, persona,
  * question expectations, or phase transitions.
  */
 
-export type QuestionType = 'system_design' | 'low_level_design' | 'coding';
+export type QuestionType = 'system_design' | 'low_level_design' | 'coding' | 'behavioral';
 
 export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   system_design: 'System design',
   low_level_design: 'Low-level design',
   coding: 'Coding',
+  behavioral: 'Behavioral',
 };
 
 export interface RubricCategory {
@@ -29,6 +30,15 @@ export interface Rubric {
   redFlags: string[];
 }
 
+/** One planned behavioral question, tied to a principle and (when possible) something on the resume. */
+export interface PlannedQuestion {
+  competency: string;
+  question: string;
+  followUps: string[];
+  /** The resume item this question is anchored on, if any. */
+  anchor?: string;
+}
+
 export interface SystemDesignQuestion {
   id: string;
   /** Defaults to system_design when absent (the built-in classics). */
@@ -45,6 +55,8 @@ export interface SystemDesignQuestion {
   questionNotes: string;
   /** Present for AI-generated questions; grading uses it instead of the default categories. */
   rubric?: Rubric;
+  /** Behavioral interviews only: the question plan the interviewer works through. */
+  plannedQuestions?: PlannedQuestion[];
 }
 
 export const SYSTEM_DESIGN_QUESTIONS: SystemDesignQuestion[] = [
@@ -142,6 +154,17 @@ export const SYSTEM_DESIGN_QUESTIONS: SystemDesignQuestion[] = [
 ];
 
 const TYPE_BLOCKS: Record<QuestionType, { role: string; flow: string }> = {
+  behavioral: {
+    role: 'a 30-minute behavioral interview',
+    flow: `- This is a conversation about the candidate's past experience. There is no whiteboard or code, so never refer to one.
+- Work through the planned questions in the private notes in order, skipping or merging any that were already covered. Ask ONE question at a time, and use the resume anchors to make it specific ("I saw you led the payments migration at Acme. Tell me about a time things went sideways on it").
+- Ask for a specific example from their own experience, not hypotheticals or generalities. If they answer in the abstract ("I usually..."), ask for the one time it actually happened.
+- Probe for STAR without naming it: the situation and stakes, what THEY personally did (separate "I" from "we"), the decisions and trade-offs they made, the measurable result, and what they would do differently.
+- Ask follow-ups before moving on: why that choice, what the other person said, how you knew it worked, what it cost. Two or three follow-ups on a good story are better than skimming many.
+- If an answer is thin, say so politely and dig ("Can you give me the numbers?", "What was your specific part in that?"). If a story is strong, acknowledge it briefly and move on.
+- Keep track of the time. Cover at most six to eight stories in thirty minutes, and wrap up with a chance for them to ask you a question.
+- Stay warm but evidence-driven. Do not coach them on how to answer better during the interview.`,
+  },
   system_design: {
     role: 'a 30-minute system design interview',
     flow: `- Follow the phases: clarify requirements, estimate scale, high-level design, deep dive, wrap-up.
@@ -178,7 +201,20 @@ Must-cover topics: ${question.rubric.mustCover.join('; ')}
 Red flags to watch for: ${question.rubric.redFlags.join('; ')}`
     : '';
 
-  return `You are a senior staff engineer running ${block.role} over a voice call. The question is: ${question.title} (${question.scale}). ${question.description}
+  const planText =
+    question.type === 'behavioral' && question.plannedQuestions?.length
+      ? `
+
+Planned questions (private; ask them one at a time in roughly this order, adapt to what the candidate says, and never read them out as a list):
+${question.plannedQuestions
+  .map(
+    (q, i) =>
+      `${i + 1}. [${q.competency}] ${q.question}${q.anchor ? ` (anchor: ${q.anchor})` : ''}\n   Follow-ups: ${q.followUps.join(' / ')}`
+  )
+  .join('\n')}`
+      : '';
+
+  return `You are a senior ${question.type === 'behavioral' ? 'hiring manager and bar raiser' : 'staff engineer'} running ${block.role} over a voice call. The question is: ${question.title} (${question.scale}). ${question.description}
 
 How you sound (this is spoken aloud, so it must sound like a real person talking):
 - Talk like a relaxed, friendly-but-sharp colleague. Use contractions, plain words and natural rhythm ("Okay, got it.", "Hm, interesting.", "Right, and what happens when...").
@@ -190,11 +226,11 @@ How you sound (this is spoken aloud, so it must sound like a real person talking
 How you interview:
 - Never give away the answer. Ask questions; don't propose the design or the algorithm.
 - Messages starting with [COACH] are private guidance from the evaluator. Follow it at the next natural moment in your own words. Never quote it, never mention a coach or evaluator, and never say a bracketed tag aloud.
-- When the call begins you will get a [START OF INTERVIEW] message. Greet the candidate, explain how the session works, explain the problem in your own words, then invite clarifying questions. Wait for them to speak before moving on.
+- When the call begins you will get a [START OF INTERVIEW] message. Follow its instructions for the opening exactly, then stop and wait for the candidate to speak.
 - When the timer says to move on, say so like a real interviewer.
 - If they're stuck: first a guiding question; if still stuck, point at the area to think about; only then a concrete hint.
 - Be direct and fair, never flattering.
 ${block.flow}
 
-Question notes (private, for probing): ${question.questionNotes}${rubricText}`;
+Question notes (private, for probing): ${question.questionNotes}${planText}${rubricText}`;
 }

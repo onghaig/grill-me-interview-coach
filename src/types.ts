@@ -23,6 +23,13 @@ const PHASE_OVERRIDES: Record<string, Partial<Record<InterviewPhase, { label: st
     deep_dive: { label: 'Extend & harden', description: 'New requirements, concurrency, error handling, edge cases' },
     wrap_up: { label: 'Wrap-up', description: 'Trade-offs and what you would change' },
   },
+  behavioral: {
+    clarify: { label: 'Warm-up', description: 'Introductions and background' },
+    estimate: { label: 'Experience', description: 'Stories from your past roles' },
+    design: { label: 'Deep dives', description: 'Specifics, decisions and results' },
+    deep_dive: { label: 'Principles', description: 'Leadership principles and judgment' },
+    wrap_up: { label: 'Wrap-up', description: 'Reflection and your questions' },
+  },
   coding: {
     clarify: { label: 'Clarify', description: 'Restate the problem, examples, constraints, edge cases' },
     estimate: { label: 'Approach', description: 'Brute force to optimal, complexity analysis' },

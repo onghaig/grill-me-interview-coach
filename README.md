@@ -1,6 +1,6 @@
-# Software Engineering Technical Interview Coach
+# Bar Raiser
 
-Practice system design, low-level design and LeetCode-style interviews against an AI interviewer you talk to out loud.
+Practice system design, low-level design, LeetCode-style and behavioral interviews against an AI interviewer you talk to out loud.
 
 - Type any question. Gemini decides what kind it is, writes the problem and a weighted grading rubric, and you review it before starting.
 - Voice interview over the Gemini Live API (hands-free or push-to-talk), with a whiteboard (Excalidraw), a syntax-highlighted code editor and the problem statement side by side. The interviewer sees both your diagram and your code.

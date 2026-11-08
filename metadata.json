@@ -1,6 +1,6 @@
 {
-  "name": "Software Engineering Technical Interview Coach",
-  "description": "Real-time AI mock interviewer for system design, low-level design and coding interviews, with a whiteboard, code editor and voice powered by the Gemini Live API.",
+  "name": "Bar Raiser",
+  "description": "AI mock interviewer for system design, low-level design, coding and behavioral interviews, with a whiteboard, code editor and voice powered by the Gemini Live API.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
