@@ -4,14 +4,17 @@ interface InterviewerFaceProps {
   /** Returns current output loudness, 0 to 1. Read every frame, so it must be cheap. */
   getLevel: () => number;
   speaking: boolean;
-  /** The candidate is talking (the interviewer looks attentive). */
+  /** The candidate is talking (the dog tilts its head and perks its ears). */
   listening: boolean;
 }
 
-/** A rough, hand-drawn stick-figure face whose mouth follows the interviewer's voice. */
+/** A rough, hand-drawn dog whose mouth follows the interviewer's voice. */
 export function InterviewerFace({ getLevel, speaking, listening }: InterviewerFaceProps) {
   const mouthRef = useRef<SVGPathElement>(null);
+  const tongueRef = useRef<SVGEllipseElement>(null);
   const headRef = useRef<SVGGElement>(null);
+  const earL = useRef<SVGGElement>(null);
+  const earR = useRef<SVGGElement>(null);
   const eyeL = useRef<SVGEllipseElement>(null);
   const eyeR = useRef<SVGEllipseElement>(null);
   const browL = useRef<SVGPathElement>(null);
@@ -46,38 +49,45 @@ export function InterviewerFace({ getLevel, speaking, listening }: InterviewerFa
       st.smooth += (target - st.smooth) * 0.45;
       const open = Math.min(1, st.smooth * 1.3);
 
-      // Mouth: a smile at rest that opens into an oval while speaking
-      const w = 15 - open * 3;
-      const y = 76;
-      const lip = 3 - open * 2;
-      const drop = open * 15;
+      // Mouth: a closed grin at rest, the lower jaw drops while speaking
+      const jaw = open * 13;
       if (mouthRef.current) {
         mouthRef.current.setAttribute(
           'd',
           open < 0.06
-            ? `M ${50 - w} ${y} Q 50 ${y + lip + 4} ${50 + w} ${y}`
-            : `M ${50 - w} ${y} Q 50 ${y - 4} ${50 + w} ${y} Q 50 ${y + drop + 4} ${50 - w} ${y} Z`
+            ? 'M 50 63 L 50 68 M 37 67 Q 44 73 50 68 Q 56 73 63 67'
+            : `M 50 63 L 50 68 M 38 67 Q 50 70 62 67 Q 60 ${68 + jaw} 50 ${69 + jaw} Q 40 ${68 + jaw} 38 67 Z`
         );
         mouthRef.current.setAttribute('fill', open < 0.06 ? 'none' : 'currentColor');
-        mouthRef.current.setAttribute('fill-opacity', '0.25');
+        mouthRef.current.setAttribute('fill-opacity', '0.18');
+      }
+      if (tongueRef.current) {
+        tongueRef.current.setAttribute('cy', String(67 + jaw * 0.8));
+        tongueRef.current.setAttribute('ry', String(Math.max(0.01, jaw * 0.3)));
+        tongueRef.current.setAttribute('opacity', open < 0.1 ? '0' : '0.55');
       }
 
       // Eyes: blink squashes them for ~120ms
       const since = t - st.blink;
-      const ry = since < 120 ? 0.8 : 4.2;
+      const ry = since < 120 ? 0.8 : 4;
       eyeL.current?.setAttribute('ry', String(ry));
       eyeR.current?.setAttribute('ry', String(ry));
 
-      // Brows lift slightly while the candidate talks
+      // Brows lift while the candidate talks
       const lift = st.listening ? -3 : 0;
       browL.current?.setAttribute('transform', `translate(0 ${lift})`);
       browR.current?.setAttribute('transform', `translate(0 ${lift})`);
 
-      // Gentle bob while speaking, slight tilt while listening
-      if (headRef.current && !reduce) {
-        const bob = st.speaking ? Math.sin(t / 220) * 1.2 * (0.4 + open) : Math.sin(t / 1400) * 0.6;
-        const tilt = st.listening ? 3 : 0;
-        headRef.current.setAttribute('transform', `translate(0 ${bob.toFixed(2)}) rotate(${tilt} 50 50)`);
+      if (!reduce) {
+        // Ears flop with the voice and perk up when listening
+        const flap = st.speaking ? Math.sin(t / 150) * 4 * (0.3 + open) : Math.sin(t / 1800) * 1.5;
+        const perk = st.listening ? 14 : 0;
+        earL.current?.setAttribute('transform', `rotate(${(flap - perk).toFixed(2)} 29 30)`);
+        earR.current?.setAttribute('transform', `rotate(${(-flap + perk).toFixed(2)} 71 30)`);
+        // Head bobs while speaking, tilts like a curious dog while listening
+        const bob = st.speaking ? Math.sin(t / 220) * 1.3 * (0.4 + open) : Math.sin(t / 1400) * 0.6;
+        const tilt = st.listening ? 9 : 0;
+        headRef.current?.setAttribute('transform', `translate(0 ${bob.toFixed(2)}) rotate(${tilt} 50 55)`);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -90,7 +100,7 @@ export function InterviewerFace({ getLevel, speaking, listening }: InterviewerFa
       viewBox="0 0 100 110"
       className="w-full h-full text-slate-200"
       role="img"
-      aria-label={speaking ? 'Interviewer is speaking' : listening ? 'Interviewer is listening' : 'Interviewer'}
+      aria-label={speaking ? 'Interviewer dog is speaking' : listening ? 'Interviewer dog is listening' : 'Interviewer dog'}
     >
       <defs>
         {/* Slight wobble gives the lines a hand-drawn feel */}
@@ -100,16 +110,28 @@ export function InterviewerFace({ getLevel, speaking, listening }: InterviewerFa
         </filter>
       </defs>
       <g filter="url(#sketchy)" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" fill="none">
-        {/* neck and shoulders */}
-        <path d="M 50 88 L 50 100 M 24 108 Q 50 98 76 108" />
+        {/* collar and tag */}
+        <path d="M 34 88 Q 50 98 66 88" />
+        <circle cx="50" cy="98" r="3.4" strokeWidth="2" />
         <g ref={headRef}>
-          <path d="M 50 12 C 74 11 88 28 87 52 C 86 76 70 90 50 90 C 30 90 14 76 13 52 C 12 28 26 13 50 12 Z" />
-          <path ref={browL} d="M 28 38 Q 36 33 44 37" />
-          <path ref={browR} d="M 56 37 Q 64 33 72 38" />
-          <ellipse ref={eyeL} cx="36" cy="49" rx="3.2" ry="4.2" fill="currentColor" stroke="none" />
-          <ellipse ref={eyeR} cx="64" cy="49" rx="3.2" ry="4.2" fill="currentColor" stroke="none" />
-          <path d="M 50 53 Q 46 62 51 64" strokeWidth="2" />
-          <path ref={mouthRef} d="M 35 76 Q 50 82 65 76" />
+          {/* floppy ears sit behind the head */}
+          <g ref={earL}>
+            <path d="M 29 30 C 14 26 6 44 9 64 C 11 74 22 72 26 60 C 29 50 30 40 29 30 Z" fill="currentColor" fillOpacity="0.12" />
+          </g>
+          <g ref={earR}>
+            <path d="M 71 30 C 86 26 94 44 91 64 C 89 74 78 72 74 60 C 71 50 70 40 71 30 Z" fill="currentColor" fillOpacity="0.12" />
+          </g>
+          {/* head */}
+          <path d="M 50 14 C 72 13 82 30 81 50 C 80 72 68 86 50 86 C 32 86 20 72 19 50 C 18 30 28 15 50 14 Z" />
+          <path ref={browL} d="M 31 33 Q 38 29 44 33" strokeWidth="2.2" />
+          <path ref={browR} d="M 56 33 Q 62 29 69 33" strokeWidth="2.2" />
+          <ellipse ref={eyeL} cx="38" cy="43" rx="3.2" ry="4" fill="currentColor" stroke="none" />
+          <ellipse ref={eyeR} cx="62" cy="43" rx="3.2" ry="4" fill="currentColor" stroke="none" />
+          {/* muzzle and nose */}
+          <path d="M 34 58 C 34 52 42 51 50 51 C 58 51 66 52 66 58 C 66 70 58 76 50 76 C 42 76 34 70 34 58 Z" strokeWidth="2" />
+          <ellipse cx="50" cy="56" rx="6.5" ry="4.6" fill="currentColor" stroke="none" />
+          <ellipse ref={tongueRef} cx="50" cy="67" rx="5.5" ry="0.01" fill="currentColor" stroke="none" opacity="0" />
+          <path ref={mouthRef} d="M 50 63 L 50 68 M 37 67 Q 44 73 50 68 Q 56 73 63 67" strokeWidth="2.2" />
         </g>
       </g>
     </svg>
