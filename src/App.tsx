@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { describeClose } from './utils/wsClose';
 import { WhiteboardCanvas } from './components/WhiteboardCanvas';
 import { InterviewPanel } from './components/InterviewPanel';
 import { ScorecardModal } from './components/ScorecardModal';
@@ -48,7 +49,7 @@ export default function App() {
   const [showKeySetup, setShowKeySetup] = useState(false);
   const [history, setHistory] = useState<InterviewSummary[]>([]);
   const [reviewRecord, setReviewRecord] = useState<SavedInterview | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; detail?: string; sticky?: boolean; onRetry?: () => void } | null>(null);
   const recordRef = useRef<SavedInterview | null>(null);
   // Interviews that were paused or interrupted, and the one this page is currently running
   const [liveSessions, setLiveSessions] = useState<LiveSessionSummary[]>([]);
@@ -135,9 +136,9 @@ export default function App() {
 
   stateRef.current = { currentQuestion, timing, voice, currentPhase, elapsedSeconds, transcripts, code, codeLanguage, latestDiagramText };
 
-  const showNotice = (msg: string) => setNotice(msg);
+  const showNotice = (text: string, opts?: { detail?: string; sticky?: boolean; onRetry?: () => void }) => setNotice({ text, ...opts });
   useEffect(() => {
-    if (!notice) return;
+    if (!notice || notice.sticky) return;
     const t = setTimeout(() => setNotice(null), 9000);
     return () => clearTimeout(t);
   }, [notice]);
@@ -611,8 +612,21 @@ export default function App() {
       // Connect WebSocket
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/live`;
+      // Never leave an earlier connection open: it would keep holding this account's live-interview lock
+      if (wsRef.current) {
+        const old = wsRef.current;
+        wsRef.current = null;
+        try {
+          if (old.readyState === WebSocket.OPEN) old.send(JSON.stringify({ type: 'stop' }));
+          old.close();
+        } catch {
+          /* already closed */
+        }
+      }
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+      let everConnected = false;
+      let closedByUs = false;
 
       ws.onopen = () => {
         // Send start command
@@ -639,6 +653,7 @@ export default function App() {
           const msg = JSON.parse(event.data);
 
           if (msg.type === 'status' && msg.status === 'connected') {
+            everConnected = true;
             sessionModeRef.current = msg.mode || 'live_socket';
             setConnecting(false);
             setIsInterviewActive(true);
@@ -679,22 +694,36 @@ export default function App() {
             audioThisTurnRef.current = false;
             closeStreamedEntry();
           } else if (msg.type === 'error') {
-            // A refresh can leave the old connection open for a moment. When rejoining, wait and try again quietly.
-            if (msg.code === 'live_limit' && resuming && (resumeOpts?.attempt ?? 0) < 3) {
+            // The previous connection (refresh, crash, dropped voice session) can still hold the lock for a moment.
+            // Wait and try again, telling the user what is happening.
+            const MAX_ATTEMPTS = 10;
+            const attempt = resumeOpts?.attempt ?? 0;
+            if (msg.code === 'live_limit' && attempt < MAX_ATTEMPTS) {
               audioRecorderRef.current?.stop();
               audioRecorderRef.current = null;
               setConnecting(false);
               setIsInterviewActive(false);
+              closedByUs = true;
               ws.close();
-              setTimeout(() => startSession(question, options, { ...resumeOpts, hasProgress: true, attempt: (resumeOpts?.attempt ?? 0) + 1 }), 3000);
+              showNotice(`Your previous interview connection is still being released. Retrying automatically (${attempt + 1}/${MAX_ATTEMPTS})...`, { detail: msg.detail, sticky: true });
+              setTimeout(() => {
+                setNotice(null);
+                startSession(question, options, { ...resumeOpts, hasProgress: resuming ? true : resumeOpts?.hasProgress, attempt: attempt + 1 });
+              }, 3000);
               return;
             }
-            showNotice(msg.error || 'Something went wrong with the interview connection.');
+            const needsAction = ['live_limit', 'live_dropped', 'lease_lost'].includes(msg.code);
+            showNotice(msg.error || 'Something went wrong with the interview connection.', {
+              detail: [msg.code, msg.detail].filter(Boolean).join(': ') || undefined,
+              sticky: needsAction,
+              onRetry: needsAction && msg.code !== 'lease_lost' ? () => startSession(question, options) : undefined,
+            });
             if (['live_limit', 'no_key', 'unauthorized'].includes(msg.code)) {
               setConnecting(false);
               setIsInterviewActive(false);
               audioRecorderRef.current?.stop();
               audioRecorderRef.current = null;
+              closedByUs = true;
               ws.close();
               if (msg.code === 'unauthorized') setAuth('anon');
               if (msg.code === 'no_key') setShowKeySetup(true);
@@ -702,6 +731,12 @@ export default function App() {
           } else if (msg.type === 'status' && msg.status === 'closed') {
             setIsInterviewActive(false);
             setConnecting(false);
+            // The server has ended this interview. Close our side too so nothing lingers holding the interview lock.
+            audioRecorderRef.current?.stop();
+            audioRecorderRef.current = null;
+            closedByUs = true;
+            if (wsRef.current === ws) wsRef.current = null;
+            ws.close();
           }
         } catch (err) {
           console.error('Error parsing WS message:', err);
@@ -714,7 +749,16 @@ export default function App() {
         setIsInterviewActive(false);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
+        // Explain unexpected closes. Closes we started (end, pause, switching sessions) stay quiet.
+        if (!closedByUs && !pausedRef.current && wsRef.current === ws) {
+          const { text, detail } = describeClose(ev.code, ev.reason);
+          showNotice(everConnected ? text : `Could not connect to the interview server. ${text}`, {
+            detail,
+            sticky: true,
+            onRetry: ev.code === 4401 || ev.code === 1008 ? undefined : () => startSession(question, options),
+          });
+        }
         audioRecorderRef.current?.stop();
         audioRecorderRef.current = null;
         setIsInterviewActive(false);
@@ -959,7 +1003,27 @@ export default function App() {
       role="alert"
       className="fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-lg w-[calc(100%-2rem)] rounded-lg border border-amber-500/40 bg-slate-900 px-4 py-3 text-sm text-amber-100 shadow-xl shadow-black/40 flex items-start gap-3"
     >
-      <span className="flex-1 leading-relaxed">{notice}</span>
+      <div className="flex-1 min-w-0">
+        <span className="leading-relaxed">{notice.text}</span>
+        {notice.detail && (
+          <details className="mt-1 text-xs text-slate-400">
+            <summary className="cursor-pointer select-none">Details</summary>
+            <span className="font-mono break-words">{notice.detail}</span>
+          </details>
+        )}
+      </div>
+      {notice.onRetry && (
+        <button
+          onClick={() => {
+            const retry = notice.onRetry;
+            setNotice(null);
+            retry?.();
+          }}
+          className="text-indigo-300 hover:text-indigo-200 text-xs font-medium shrink-0"
+        >
+          Retry
+        </button>
+      )}
       <button onClick={() => setNotice(null)} className="text-slate-400 hover:text-slate-200 text-xs shrink-0">
         Dismiss
       </button>
@@ -1107,7 +1171,7 @@ export default function App() {
         </div>
         <div className="flex-1 min-h-0 relative">
           {/* Both stay mounted so neither loses its state when switching tabs */}
-          <div className={`absolute inset-0 ${workspaceTab === 'whiteboard' ? '' : 'invisible pointer-events-none'}`}>
+          <div className={`absolute inset-0 ${workspaceTab === 'whiteboard' ? '' : 'hidden'}`}>
             <WhiteboardCanvas
               onDiagramUpdate={handleDiagramUpdate}
               latestSerializedText={latestDiagramText}

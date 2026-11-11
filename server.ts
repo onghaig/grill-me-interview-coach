@@ -653,9 +653,10 @@ Scale or constraints: ${q.scale}`;
 const server = http.createServer(app);
 
 // Setup WebSocket server for Gemini Live & Voice session
-const wss = new WebSocketServer({ server, path: "/ws/live", maxPayload: 1024 * 1024 });
+const wss = new WebSocketServer({ server, path: "/ws/live", maxPayload: 1024 * 1024 });wss.on("error", (err) => console.error("WebSocket server error:", err));
 
-const LEASE_MS = 60_000;
+const LEASE_MS = 30_000;
+const HEARTBEAT_MS = 10_000;
 
 wss.on("connection", (clientWs: WebSocket, req) => {
   // Authenticate from the session cookie. Messages wait for this before doing anything.
@@ -667,9 +668,17 @@ wss.on("connection", (clientWs: WebSocket, req) => {
   let userId: string | null = null;
   let leaseHolder: string | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
-  const sendJson = (o: object) => {
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify(o));
+  // Never throws: the browser may have gone away between the check and the send
+  const safeSend = (data: string) => {
+    if (clientWs.readyState !== WebSocket.OPEN) return;
+    try {
+      clientWs.send(data);
+    } catch (err) {
+      console.warn("WebSocket send failed:", (err as any)?.message || err);
+    }
   };
+  const sendJson = (o: object) => safeSend(JSON.stringify(o));
+  let lastLiveError = "";
 
   let liveSession: any = null;
   let isConnected = false;
@@ -699,7 +708,11 @@ wss.on("connection", (clientWs: WebSocket, req) => {
       last.sent = raw;
       last.at = Date.now();
       if (liveSession && sessionMode === "live_socket" && isConnected) {
-        liveSession.sendClientContent({ turns: [{ role: "user", parts: [{ text: formatted }] }], turnComplete: false });
+        try {
+          liveSession.sendClientContent({ turns: [{ role: "user", parts: [{ text: formatted }] }], turnComplete: false });
+        } catch (err) {
+          console.warn("Could not send context to the live session:", (err as any)?.message || err);
+        }
       } else if (sessionMode === "conversational_engine" && isConnected) {
         // Keep only the latest snapshot of each kind in the text history
         conversationHistory = conversationHistory.filter((c) => !(c.role === "note" && c.text.startsWith(`[${kind.toUpperCase()} UPDATE]`)));
@@ -773,13 +786,13 @@ Interviewer Spoken Response:`;
         const replyText = reply.replace(/\[[A-Z][A-Z _-]*(?::[^\]]*)?\]:?/g, "").trim();
         if (replyText) {
           conversationHistory.push({ role: "model", text: replyText });
-          clientWs.send(
+          safeSend(
             JSON.stringify({
               type: "output_transcript",
               text: replyText,
             })
           );
-          clientWs.send(JSON.stringify({ type: "turn_complete" }));
+          safeSend(JSON.stringify({ type: "turn_complete" }));
           return;
         }
       }
@@ -799,23 +812,23 @@ Interviewer Spoken Response:`;
       }
 
       conversationHistory.push({ role: "model", text: fallbackReply });
-      clientWs.send(
+      safeSend(
         JSON.stringify({
           type: "output_transcript",
           text: fallbackReply,
         })
       );
-      clientWs.send(JSON.stringify({ type: "turn_complete" }));
+      safeSend(JSON.stringify({ type: "turn_complete" }));
     } catch (err: any) {
       console.error("Error generating interviewer turn:", err);
       const safeReply = `Understood. Can you walk me through the trade-offs in your choice of storage and data partitioning?`;
-      clientWs.send(
+      safeSend(
         JSON.stringify({
           type: "output_transcript",
           text: safeReply,
         })
       );
-      clientWs.send(JSON.stringify({ type: "turn_complete" }));
+      safeSend(JSON.stringify({ type: "turn_complete" }));
     }
   };
 
@@ -862,6 +875,8 @@ Interviewer Spoken Response:`;
             type: "error",
             code: "live_limit",
             error: "You already have a live interview running. End it, or close the other tab, then try again.",
+            detail: `The server still holds a live-interview lock for your account (from another tab, or a connection that dropped). It is released as soon as that connection closes, or within ${Math.round(LEASE_MS / 1000)} seconds if it died.`,
+            retryAfterMs: LEASE_MS,
           });
           return;
         }
@@ -871,9 +886,10 @@ Interviewer Spoken Response:`;
           const ok = await renewLease(user.id, leaseHolder, LEASE_MS).catch(() => true);
           if (!ok) {
             sendJson({ type: "status", status: "closed", message: "This interview was ended because it was started somewhere else." });
+            sendJson({ type: "error", code: "lease_lost", error: "This interview was ended because it was started in another tab or device.", detail: "Your live-interview lock was taken over by a newer connection." });
             cleanupSession();
           }
-        }, 20_000);
+        }, HEARTBEAT_MS);
         const gen = sessionGen;
         const questionId = msg.questionId;
         const found = SYSTEM_DESIGN_QUESTIONS.find((q) => q.id === questionId);
@@ -971,7 +987,7 @@ Interviewer Spoken Response:`;
                   onopen: () => {
                     isConnected = true;
                     sessionMode = "live_socket";
-                    clientWs.send(
+                    safeSend(
                       JSON.stringify({
                         type: "status",
                         status: "connected",
@@ -988,7 +1004,7 @@ Interviewer Spoken Response:`;
                     if (serverContent.modelTurn?.parts) {
                       for (const part of serverContent.modelTurn.parts) {
                         if (part.inlineData?.data) {
-                          clientWs.send(
+                          safeSend(
                             JSON.stringify({
                               type: "audio",
                               data: part.inlineData.data,
@@ -1000,7 +1016,7 @@ Interviewer Spoken Response:`;
 
                     // User speech transcription
                     if (serverContent.inputTranscription?.text) {
-                      clientWs.send(
+                      safeSend(
                         JSON.stringify({
                           type: "input_transcript",
                           text: serverContent.inputTranscription.text,
@@ -1008,7 +1024,7 @@ Interviewer Spoken Response:`;
                         })
                       );
                     } else if (serverContent.interimInputTranscription?.text) {
-                      clientWs.send(
+                      safeSend(
                         JSON.stringify({
                           type: "input_transcript",
                           text: serverContent.interimInputTranscription.text,
@@ -1019,7 +1035,7 @@ Interviewer Spoken Response:`;
 
                     // Interviewer speech transcription
                     if (serverContent.outputTranscription?.text) {
-                      clientWs.send(
+                      safeSend(
                         JSON.stringify({
                           type: "output_transcript",
                           text: serverContent.outputTranscription.text,
@@ -1029,26 +1045,32 @@ Interviewer Spoken Response:`;
 
                     // Interrupted
                     if (serverContent.interrupted) {
-                      clientWs.send(JSON.stringify({ type: "interrupted" }));
+                      safeSend(JSON.stringify({ type: "interrupted" }));
                     }
 
                     // Turn complete
                     if (serverContent.turnComplete) {
-                      clientWs.send(JSON.stringify({ type: "turn_complete" }));
+                      safeSend(JSON.stringify({ type: "turn_complete" }));
                     }
                   },
                   onerror: (err: any) => {
-                    console.warn(`Live session error on ${modelCandidate}:`, err?.message || err);
+                    lastLiveError = String(err?.message || err || "unknown error");
+                    console.warn(`Live session error on ${modelCandidate}:`, lastLiveError);
                   },
-                  onclose: () => {
+                  onclose: (ev: any) => {
                     // Only tell the client if Gemini dropped on its own (not our own cleanup/restart)
                     if (gen !== sessionGen) return;
                     isConnected = false;
-                    if (clientWs.readyState === WebSocket.OPEN) {
-                      clientWs.send(
-                        JSON.stringify({ type: "status", status: "closed", message: "The voice session ended unexpectedly." })
-                      );
-                    }
+                    const why = [ev?.code ? `code ${ev.code}` : "", ev?.reason || lastLiveError].filter(Boolean).join(": ");
+                    sendJson({
+                      type: "error",
+                      code: "live_dropped",
+                      error: "The voice connection to Gemini dropped, so the interview was ended. You can restart it or continue in text chat.",
+                      detail: `Model ${modelCandidate}${why ? `, ${why}` : ""}`,
+                    });
+                    sendJson({ type: "status", status: "closed", message: "The voice session ended unexpectedly." });
+                    // Release the interview lock now so restarting right away works
+                    cleanupSession();
                   },
                 },
               });
@@ -1056,7 +1078,8 @@ Interviewer Spoken Response:`;
               liveConnected = true;
               break;
             } catch (err: any) {
-              console.warn(`Live API connect attempt failed for ${modelCandidate}:`, err?.message || err);
+              lastLiveError = String(err?.message || err || "unknown error");
+              console.warn(`Live API connect attempt failed for ${modelCandidate}:`, lastLiveError);
             }
           }
         }
@@ -1087,9 +1110,17 @@ Interviewer Spoken Response:`;
           }
         } else {
           // Switch to conversational AI engine with spoken browser voice
+          if (!textOnly) {
+            sendJson({
+              type: "error",
+              code: "live_unavailable",
+              error: "Live voice could not be started, so this interview is using text chat with browser speech.",
+              detail: lastLiveError ? `Last error: ${lastLiveError}` : "All live voice models failed to connect.",
+            });
+          }
           isConnected = true;
           sessionMode = "conversational_engine";
-          clientWs.send(
+          safeSend(
             JSON.stringify({
               type: "status",
               status: "connected",
@@ -1206,7 +1237,7 @@ Interviewer Spoken Response:`;
         }
       } else if (msg.type === "stop") {
         await cleanupSession();
-        clientWs.send(
+        safeSend(
           JSON.stringify({
             type: "status",
             status: "closed",
@@ -1216,7 +1247,14 @@ Interviewer Spoken Response:`;
       }
     } catch (err: any) {
       console.error("WebSocket message handling error:", err);
+      sendJson({ type: "error", code: "internal", error: "Something went wrong on the server while handling that.", detail: String(err?.message || err) });
     }
+  });
+
+  // Without this listener an error event (oversized message, reset connection) would crash the whole process
+  clientWs.on("error", (err: any) => {
+    console.warn("Client WebSocket error:", err?.message || err);
+    cleanupSession();
   });
 
   clientWs.on("close", () => {
@@ -1259,6 +1297,10 @@ async function startServer() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 }
+
+// A stray error in one interview must not take down everyone else's
+process.on("uncaughtException", (err) => console.error("Uncaught exception:", err));
+process.on("unhandledRejection", (err) => console.error("Unhandled rejection:", err));
 
 startServer().catch((err) => {
   console.error("Failed to start:", err);
