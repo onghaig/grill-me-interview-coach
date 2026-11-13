@@ -749,6 +749,182 @@ wss.on("connection", (clientWs: WebSocket, req) => {
     coachNotes = [];
   };
 
+  // Gemini ends a live connection after roughly 10 minutes (it sends goAway first) and can also drop it after a
+  // long silence. We ask for resumption handles so a dropped connection is reopened transparently and the interview
+  // carries on; only a connection that cannot be resumed ends the interview.
+  let resumeHandle: string | null = null;
+  let liveSetup: { systemInstruction: string; voice: string; model: string } | null = null;
+  let reconnecting = false;
+
+  const buildLive = (model: string, gen: number, attempt: { established: boolean }, handle: string | null, announce: boolean) => ({
+    model,
+    config: {
+      responseModalities: [Modality.AUDIO],
+      // Long interviews: once the conversation is large, drop the oldest turns instead of re-reading all of it
+      // on every reply. The thresholds are high so a normal 30 minute interview keeps its full context.
+      contextWindowCompression: { triggerTokens: "90000", slidingWindow: { targetTokens: "50000" } },
+      sessionResumption: handle ? { handle } : {},
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: {
+            voiceName: liveSetup!.voice,
+          },
+        },
+      },
+      systemInstruction: liveSetup!.systemInstruction,
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      // Push-to-talk is handled by the client (it only sends audio while the key is held), so the user can
+      // switch between push-to-talk and hands-free at any moment without reconnecting.
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          // Less eager to decide that background noise or echo is the candidate talking, which is
+          // what makes the interviewer stop mid-sentence. The padding keeps the first syllable.
+          startOfSpeechSensitivity: "START_SENSITIVITY_LOW" as any,
+          prefixPaddingMs: 200,
+          endOfSpeechSensitivity: "END_SENSITIVITY_LOW" as any,
+          silenceDurationMs: 1400,
+        },
+      },
+    },
+    callbacks: {
+      onopen: () => {
+        if (!announce) return;
+        isConnected = true;
+        sessionMode = "live_socket";
+        safeSend(
+          JSON.stringify({
+            type: "status",
+            status: "connected",
+            mode: "live_socket",
+            message: `Live voice session active with ${model}`,
+          })
+        );
+      },
+      onmessage: (liveMsg: any) => {
+        if (liveMsg.sessionResumptionUpdate) {
+          const u = liveMsg.sessionResumptionUpdate;
+          if (u.resumable && u.newHandle) resumeHandle = u.newHandle;
+        }
+        if (liveMsg.goAway) {
+          console.log(`Gemini live goAway on ${model}, time left: ${liveMsg.goAway.timeLeft || "unknown"}`);
+        }
+        const serverContent = liveMsg.serverContent;
+        if (!serverContent) return;
+
+        // Model audio output
+        if (serverContent.modelTurn?.parts) {
+          for (const part of serverContent.modelTurn.parts) {
+            if (part.inlineData?.data) {
+              safeSend(
+                JSON.stringify({
+                  type: "audio",
+                  data: part.inlineData.data,
+                })
+              );
+            }
+          }
+        }
+
+        // User speech transcription
+        if (serverContent.inputTranscription?.text) {
+          safeSend(
+            JSON.stringify({
+              type: "input_transcript",
+              text: serverContent.inputTranscription.text,
+              isFinal: true,
+            })
+          );
+        } else if (serverContent.interimInputTranscription?.text) {
+          safeSend(
+            JSON.stringify({
+              type: "input_transcript",
+              text: serverContent.interimInputTranscription.text,
+              isFinal: false,
+            })
+          );
+        }
+
+        // Interviewer speech transcription
+        if (serverContent.outputTranscription?.text) {
+          safeSend(
+            JSON.stringify({
+              type: "output_transcript",
+              text: serverContent.outputTranscription.text,
+            })
+          );
+        }
+
+        // Interrupted
+        if (serverContent.interrupted) {
+          safeSend(JSON.stringify({ type: "interrupted" }));
+        }
+
+        // Turn complete
+        if (serverContent.turnComplete) {
+          safeSend(JSON.stringify({ type: "turn_complete" }));
+        }
+      },
+      onerror: (err: any) => {
+        lastLiveError = String(err?.message || err || "unknown error");
+        console.warn(`Live session error on ${model}:`, lastLiveError);
+      },
+      onclose: (ev: any) => {
+        // Not ours to handle: our own cleanup/restart, or an attempt that never finished connecting (the
+        // fallback loop deals with those and must not tear down the lease while it tries the next model)
+        if (gen !== sessionGen || !attempt.established) return;
+        isConnected = false;
+        const why = [ev?.code ? `code ${ev.code}` : "", ev?.reason || lastLiveError].filter(Boolean).join(": ");
+        console.warn(`Gemini live connection closed on ${model}${why ? ` (${why})` : ""}`);
+        void (async () => {
+          if (await reconnectLive(gen)) return;
+          if (gen !== sessionGen) return;
+          sendJson({
+            type: "error",
+            code: "live_dropped",
+            error: "The voice connection to Gemini dropped, so the interview was ended. You can restart it or continue in text chat.",
+            detail: `Model ${model}${why ? `, ${why}` : ""}`,
+          });
+          sendJson({ type: "status", status: "closed", message: "The voice session ended unexpectedly." });
+          // Release the interview lock now so restarting right away works
+          cleanupSession();
+        })();
+      },
+    },
+  });
+
+  // Reopen the live connection from the last resumption handle. Returns false when it cannot be resumed.
+  const reconnectLive = async (gen: number): Promise<boolean> => {
+    if (reconnecting) return true;
+    if (!resumeHandle || !liveSetup || !ai) return false;
+    reconnecting = true;
+    try {
+      for (let i = 0; i < 3; i++) {
+        if (gen !== sessionGen || clientWs.readyState !== WebSocket.OPEN) return true;
+        try {
+          const attempt = { established: false };
+          const s = await ai.live.connect(buildLive(liveSetup.model, gen, attempt, resumeHandle, false));
+          attempt.established = true;
+          if (gen !== sessionGen) {
+            try { await s.close(); } catch {}
+            return true;
+          }
+          liveSession = s;
+          isConnected = true;
+          console.log(`Resumed the Gemini live connection on ${liveSetup.model}`);
+          return true;
+        } catch (err: any) {
+          lastLiveError = String(err?.message || err || "unknown error");
+          console.warn(`Resume attempt ${i + 1} failed:`, lastLiveError);
+          await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+        }
+      }
+      return false;
+    } finally {
+      reconnecting = false;
+    }
+  };
+
   // Helper to generate a conversational turn using Gemini 3.8 Flash
   const generateInterviewerTurn = async (userPrompt: string, isKickoff = false, isEvent = false) => {
     try {
@@ -953,127 +1129,11 @@ Interviewer Spoken Response:`;
           const liveModelsToTry = chosenLive ? [chosenLive, ...LIVE_MODELS.filter((m) => m !== chosenLive)] : LIVE_MODELS;
           for (const modelCandidate of liveModelsToTry) {
             try {
-              liveSession = await ai!.live.connect({
-                model: modelCandidate,
-                config: {
-                  responseModalities: [Modality.AUDIO],
-                  // Long interviews: once the conversation is large, drop the oldest turns instead of re-reading all of it
-                  // on every reply. The thresholds are high so a normal 30 minute interview keeps its full context.
-                  contextWindowCompression: { triggerTokens: "90000", slidingWindow: { targetTokens: "50000" } },
-                  speechConfig: {
-                    voiceConfig: {
-                      prebuiltVoiceConfig: {
-                        voiceName: msg.voice || "Sulafat",
-                      },
-                    },
-                  },
-                  systemInstruction,
-                  inputAudioTranscription: {},
-                  outputAudioTranscription: {},
-                  // Push-to-talk is handled by the client (it only sends audio while the key is held), so the user can
-                  // switch between push-to-talk and hands-free at any moment without reconnecting.
-                  realtimeInputConfig: {
-                        automaticActivityDetection: {
-                          // Less eager to decide that background noise or echo is the candidate talking, which is
-                          // what makes the interviewer stop mid-sentence. The padding keeps the first syllable.
-                          startOfSpeechSensitivity: "START_SENSITIVITY_LOW" as any,
-                          prefixPaddingMs: 200,
-                          endOfSpeechSensitivity: "END_SENSITIVITY_LOW" as any,
-                          silenceDurationMs: 1400,
-                        },
-                  },
-                },
-                callbacks: {
-                  onopen: () => {
-                    isConnected = true;
-                    sessionMode = "live_socket";
-                    safeSend(
-                      JSON.stringify({
-                        type: "status",
-                        status: "connected",
-                        mode: "live_socket",
-                        message: `Live voice session active with ${modelCandidate}`,
-                      })
-                    );
-                  },
-                  onmessage: (liveMsg: any) => {
-                    const serverContent = liveMsg.serverContent;
-                    if (!serverContent) return;
-
-                    // Model audio output
-                    if (serverContent.modelTurn?.parts) {
-                      for (const part of serverContent.modelTurn.parts) {
-                        if (part.inlineData?.data) {
-                          safeSend(
-                            JSON.stringify({
-                              type: "audio",
-                              data: part.inlineData.data,
-                            })
-                          );
-                        }
-                      }
-                    }
-
-                    // User speech transcription
-                    if (serverContent.inputTranscription?.text) {
-                      safeSend(
-                        JSON.stringify({
-                          type: "input_transcript",
-                          text: serverContent.inputTranscription.text,
-                          isFinal: true,
-                        })
-                      );
-                    } else if (serverContent.interimInputTranscription?.text) {
-                      safeSend(
-                        JSON.stringify({
-                          type: "input_transcript",
-                          text: serverContent.interimInputTranscription.text,
-                          isFinal: false,
-                        })
-                      );
-                    }
-
-                    // Interviewer speech transcription
-                    if (serverContent.outputTranscription?.text) {
-                      safeSend(
-                        JSON.stringify({
-                          type: "output_transcript",
-                          text: serverContent.outputTranscription.text,
-                        })
-                      );
-                    }
-
-                    // Interrupted
-                    if (serverContent.interrupted) {
-                      safeSend(JSON.stringify({ type: "interrupted" }));
-                    }
-
-                    // Turn complete
-                    if (serverContent.turnComplete) {
-                      safeSend(JSON.stringify({ type: "turn_complete" }));
-                    }
-                  },
-                  onerror: (err: any) => {
-                    lastLiveError = String(err?.message || err || "unknown error");
-                    console.warn(`Live session error on ${modelCandidate}:`, lastLiveError);
-                  },
-                  onclose: (ev: any) => {
-                    // Only tell the client if Gemini dropped on its own (not our own cleanup/restart)
-                    if (gen !== sessionGen) return;
-                    isConnected = false;
-                    const why = [ev?.code ? `code ${ev.code}` : "", ev?.reason || lastLiveError].filter(Boolean).join(": ");
-                    sendJson({
-                      type: "error",
-                      code: "live_dropped",
-                      error: "The voice connection to Gemini dropped, so the interview was ended. You can restart it or continue in text chat.",
-                      detail: `Model ${modelCandidate}${why ? `, ${why}` : ""}`,
-                    });
-                    sendJson({ type: "status", status: "closed", message: "The voice session ended unexpectedly." });
-                    // Release the interview lock now so restarting right away works
-                    cleanupSession();
-                  },
-                },
-              });
+              liveSetup = { systemInstruction, voice: msg.voice || "Sulafat", model: modelCandidate };
+              resumeHandle = null;
+              const attempt = { established: false };
+              liveSession = await ai!.live.connect(buildLive(modelCandidate, gen, attempt, null, true));
+              attempt.established = true;
 
               liveConnected = true;
               break;
